@@ -30,7 +30,7 @@
 - Feature называть `<Module>Feature`. Отдельную фазу того же модуля — `<Module><Phase>Feature` (`BoardResultFeature`). Не заводить feature ради группировки двух систем.
 - Registrar называть `<What>Registrar` и наследовать от `EntityComponentRegistrar`; файл класть в `<Feature>/Registrars`. Serializable authoring-payload называть `<What>Authoring` и держать только в файле своего registrar.
 - Фабрику ECS-сущностей называть `<Module>Factory` с интерфейсом `I<Module>Factory` в `<Feature>/Factory`; провайдер доступа к данным — `<Module>Provider` в `<Feature>/Provider`; доменный сервис — `<Module>Service`, UI-проекцию — `<Module>UIService`.
-- MonoBehaviour, который обслуживает ECS-сущность, называть по домену без `View`/`Controller`: `BoardSlot`, `ChipAnimator`, `BoardHUD`. Размещать по общему правилу для MonoBehaviour фичи в `<Feature>/Behaviours`.
+- MonoBehaviour, который обслуживает ECS-сущность, называть по домену без `View`/`Controller`: `BoardSlot`, `ChipAnimator`, `BoardHUD`. Размещать их по общему правилу структуры модулей из `ARCHITECTURE_GUIDELINES.md`.
 - Переменную в `foreach` называть singular-формой группы, сохраняя доменный смысл: `_slotClicks` -> `slotClick`, `_pendingBoards` -> `pendingBoard`, `_animatingSlots` -> `animatingSlot`.
 - Поле группы называть `_<plural>` по составу выборки, а не по matcher-механике: `_slots`, `_chips`, `_moveActions`, `_animatingSlots`. Буфер под `GetEntities` называть `_<smth>Buffer`.
 - Если выборка по своей природе содержит одну сущность (маркер цикла вроде `LevelCompletionProcessing`, единственный `LevelProgress`), поле и итератор писать в единственном числе слово в слово по маркеру: `_levelCompletionProcessing` -> `levelCompletionProcessing`. Множественное число тут врёт про количество.

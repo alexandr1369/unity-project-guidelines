@@ -70,7 +70,7 @@
 ## Структура модулей
 - Внутри feature/module папки называть по роли конкретного слоя в единственном числе: `Factory`, `Provider`, `Service`, `Systems`, `Registrars`, `Configs`.
 - Не складывать provider-классы в папку `Services`. Если класс является обёрткой/доступом к данным или static data, это `Provider`, даже если он инжектится через DI.
-- Сервисы фичи держать в `<Feature>/Service`, отдельно от MonoBehaviour в `<Feature>/Behaviours`; папки `HUD` и `UI` для скриптов не заводить.
+- Сервисы фичи держать в `<Feature>/Service`, отдельно от сценных MonoBehaviour в `<Feature>/Behaviours` и диалогового UI в `<Feature>/UI`.
 
 ## Структура ассетов
 - Gameplay-код хранится в `Assets/Code`, разделён на `Gameplay`, `Infrastructure`, `Meta`, `Progress`, `Common`, `Editor`; новые скрипты выравнивать по этим доменам.
@@ -162,13 +162,13 @@
 
 ## Контексты проекта
 - Gameplay: всё, что связано с run-time core loops, уровнями, бустерами, live HUD, in-level audio/vfx и т.д. Код живёт под `Code.Gameplay.*` и отвечает за in-session behaviour.
-- Meta: pre/post-session опыт — home screens, economy/shop, settings, onboarding, profile, meta-dialogues. MonoBehaviour фичи размещать под `Code.Meta.<Feature>.Behaviours`, сервисы/конфиги — в том же feature namespace.
+- Meta: pre/post-session опыт — home screens, economy/shop, settings, onboarding, profile, meta-dialogues. Сценные MonoBehaviour фичи размещать под `Code.Meta.<Feature>.Behaviours`, диалоги и их элементы — под `.UI`, сервисы/конфиги — в том же feature namespace.
 - Infrastructure: cross-cutting glue (bootstrapping, state machine, logging, platform/notification services, asset loading). Использовать `Code.Infrastructure.*` для общих систем, которые потребляются и meta, и gameplay.
 - Extension, который не знает про игру (`VectorExtensions`, `EnumerableExtensions`), держать в `Code/Common/Extensions`. Extension, который работает с компонентами, конфигами или данными одной фичи, лежит в корне папки этой фичи рядом с `<Feature>Components.cs` и называется по предмету с суффиксом `Extensions`: `Hero/HeroExtensions`, `Boosters/BroomLayoutExtensions`. Отдельную папку `Extensions` внутри фичи не заводить.
 - Общую логику (utilities) держать в `Code.Common.*`. Если есть сомнение: если скрипт ссылается на progress, static data или сервисы, используемые по всему game flow, склоняться к Meta/Infrastructure; если управляет live entities уровня — выбирать Gameplay.
 - Строго поддерживать соответствие folder/namespace, чтобы installers (Zenject asmdefs) подхватывали модули автоматически; для новых контекстов обновлять asmdef.
-- Каждый модуль строить feature-first: `Code.Gameplay.Feature`, `Code.Meta.Feature`, `Code.Infrastructure.Feature`. Внутри feature использовать стандартные подпапки (`Behaviours`, `Service`, `Config`, `Installer`, `Factory`, `IndexService`, и т.д.), чтобы связанные части были рядом.
-- MonoBehaviour конкретной фичи, включая HUD, диалоги, UI-элементы и аниматоры, держать непосредственно в `<Feature>/Behaviours` с соответствующим namespace. Не создавать для них отдельные `<Feature>/HUD`, `<Feature>/UI` или вложенные папки. Registrars и базовая инфраструктура сохраняют свои профильные папки; domain services и facades живут в `<Feature>/Service`, data definitions — в `<Feature>/Config` или `<Feature>/Data`, Zenject installers — в `<Feature>/Installer`.
+- Каждый модуль строить feature-first: `Code.Gameplay.Feature`, `Code.Meta.Feature`, `Code.Infrastructure.Feature`. Внутри feature использовать стандартные подпапки (`Behaviours`, `UI`, `Service`, `Config`, `Installer`, `Factory`, `IndexService`, и т.д.), чтобы связанные части были рядом.
+- Сценные MonoBehaviour фичи, включая HUD игрового поля, держать прямо в `<Feature>/Behaviours`; отдельную папку `HUD` для них не создавать. Диалоги и их UI-элементы держать в `<Feature>/UI`. Namespace соответствует пути. Registrars и базовая инфраструктура сохраняют свои профильные папки; domain services и facades живут в `<Feature>/Service`, data definitions — в `<Feature>/Config` или `<Feature>/Data`, Zenject installers — в `<Feature>/Installer`.
 - Папка `<Feature>/Service` рассчитана на сервис самой фичи: `Storage/Service/StorageUIService`, `Hearts/Service/HeartsUIService`. Если класс решает отдельную задачу и не является сервисом фичи, папку называть по этой задаче, а не по слою: снимок состояния живёт в `<Feature>/Snapshot`, а не в `<Feature>/Service`. Иначе имя папки не несёт информации и приходится открывать файлы, чтобы понять, что внутри.
 - При добавлении новой capability начинать от player flow: если фича в pre-game menus или экономике -> Meta; если влияет на active gameplay loop/tile interactions -> Gameplay; если это wiring внешних SDK/platform behaviour или shared infra -> Infrastructure.
 - Cross-module references должны зависеть "вверх" на shared services или interfaces. Предпочитать объявлять интерфейсы в owning module и потреблять их через DI, а не обращаться к implementation-папкам другого модуля.
