@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+claude_blob="$(git rev-parse --quiet --verify :CLAUDE.md || true)"
+agents_blob="$(git rev-parse --quiet --verify :AGENTS.md || true)"
+
+if [[ -z "$claude_blob" && -z "$agents_blob" ]]; then
+    exit 0
+fi
+
+if [[ -z "$claude_blob" || -z "$agents_blob" ]]; then
+    printf 'CLAUDE.md и AGENTS.md существуют только парой: в коммите есть лишь один из них.\n' >&2
+    exit 1
+fi
+
+if [[ "$claude_blob" != "$agents_blob" ]]; then
+    printf 'CLAUDE.md и AGENTS.md разошлись. Они обязаны совпадать побайтово: правь оба.\n' >&2
+    exit 1
+fi
