@@ -15,13 +15,14 @@ if isinstance(command, list):
 
 START = r"(?:^|[;&|(]\s*)"
 is_push = re.search(START + r"git (?:-C \S+ )?push\b", command, re.M)
-if not is_push and not re.search(START + r"gh pr (?:create|edit)\b", command, re.M):
+is_pr_edit = re.search(START + r"gh pr (?:create|edit)\b", command, re.M)
+if not is_push and not is_pr_edit:
     sys.exit(0)
 
 target = re.search(START + r"(?:cd|git -C) (\S+)", command, re.M)
 cwd = os.path.expanduser(target.group(1).strip("'\"")) if target else data.get("cwd") or os.getcwd()
 branch = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
-if is_push and (branch in ("", "main", "master") or re.search(r"\bpush\b.*\b(?:main|master)\b", command)):
+if not is_pr_edit and (branch in ("", "main", "master") or re.search(r"\bpush\b.*\b(?:main|master)\b", command)):
     sys.exit(0)
 
 workflow = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "GIT_WORKFLOW.md")
