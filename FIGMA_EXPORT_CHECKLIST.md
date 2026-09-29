@@ -4,6 +4,7 @@
 
 ## Перед импортом
 
+- **Токен Figma** живёт не дольше 90 дней: бессрочных Figma больше не выдаёт. Когда FCU пишет «Reauthorization required», владелец выпускает новый в Settings → Security → Personal access tokens: имя `figma-converter-unity`, срок 90 дней, скоупы `file_content:read` (файлы и картинки) и `current_user:read` (FCU проверяет токен запросом `/v1/me`, без него сессия не добавится).
 - `imageScale` = **1**. Значение 4 даёт спрайты вчетверо крупнее нормы и разносит бюджет атласа в 16 раз. Проверять перед каждым импортом: настройка живёт на компоненте в сцене и переезжает между ветками.
 - `textComponent` = **TextMeshPro**. При `UnityText` экспорт кладёт legacy `UnityEngine.UI.Text` со встроенным Arial, которого в Unity 6 больше нет — текст не рисуется вообще.
 - `locComponent` = **I2Localization**, `locKeyCaseType` = **UPPER_SNAKE_CASE**, `locFolderPath` = `Assets/Resources/Localizations`.
