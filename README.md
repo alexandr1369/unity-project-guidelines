@@ -42,6 +42,8 @@ Claude Code: `~/.claude/skills/unity-project-guidelines/SKILL.md`.
 Общие правила изменяются в профильных документах этого репозитория; правила одной игры —
 в её паре `AGENTS.md` и `CLAUDE.md`. Папка `scripts/git-hooks` содержит необязательную
 проверку равенства этой пары.
+Папка `scripts/agent-hooks` — хуки ассистентов, общие для Claude Code и Codex: подключаются
+в `~/.claude/settings.json` и `~/.codex/hooks.json` одной и той же командой на скрипт.
 
 ## Обновление и проверка
 
