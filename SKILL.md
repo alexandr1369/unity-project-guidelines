@@ -43,6 +43,7 @@ description: Применяй общие правила команды при р
 | Тесты | [TESTING_STRATEGY.md](TESTING_STRATEGY.md) |
 | Unity UI, иерархия и именование объектов | [UI_HIERARCHY_GUIDELINES.md](UI_HIERARCHY_GUIDELINES.md) |
 | Состав сцен | [SCENE_COMPOSITION.md](SCENE_COMPOSITION.md) |
+| Графика, шейдеры, производительность кадра на мобильных | [MOBILE_RENDERING.md](MOBILE_RENDERING.md) |
 | Сторонние SDK и интеграции | [INTEGRATION_GUIDELINES.md](INTEGRATION_GUIDELINES.md) |
 | Unity-сборки и кеши | [UNITY_BUILD_GUIDELINES.md](UNITY_BUILD_GUIDELINES.md) |
 | Проверки после импорта макета Figma | [FIGMA_EXPORT_CHECKLIST.md](FIGMA_EXPORT_CHECKLIST.md) |
