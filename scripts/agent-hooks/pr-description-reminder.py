@@ -7,10 +7,10 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 
 QUERY = """query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:30){nodes{
-number title body createdAt lastEditedAt
-commits(last:60){nodes{commit{oid messageHeadline committedDate parents{totalCount}}}}}}}}"""
+number title body createdAt lastEditedAt baseRefName headRefName}}}}"""
 
 
 def run(args, cwd):
@@ -41,14 +41,16 @@ def stale_pull_requests(cwd):
     stale = []
     for pr in json.loads(result.stdout)["data"]["repository"]["pullRequests"]["nodes"]:
         since = pr["lastEditedAt"] or pr["createdAt"]
-        commits = [node["commit"] for node in pr["commits"]["nodes"]]
-        oids = [commit["oid"] for commit in commits]
+        since_ts = datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+        args = ["git", "log", "--no-merges", "--format=%H %ct %s", f"origin/{pr['baseRefName']}..origin/{pr['headRefName']}"]
         acked = checked.get(str(pr["number"]))
-        if acked in oids:
-            commits = commits[oids.index(acked) + 1:]
-        fresh = [commit for commit in commits
-                 if commit["committedDate"] > since and commit["parents"]["totalCount"] == 1
-                 and not only_tasks_file(commit["oid"], cwd)]
+        if acked and run(["git", "cat-file", "-e", acked], cwd).returncode == 0:
+            args.append("^" + acked)
+        fresh = []
+        for line in run(args, cwd).stdout.splitlines():
+            oid, timestamp, headline = line.split(" ", 2)
+            if int(timestamp) > since_ts and not only_tasks_file(oid, cwd):
+                fresh.append((oid, headline))
         if fresh:
             stale.append((pr, since, fresh))
     return stale
@@ -57,7 +59,8 @@ def stale_pull_requests(cwd):
 def mark_checked(numbers, cwd):
     state = load_state(cwd)
     for number in numbers:
-        head = run(["gh", "pr", "view", number, "--json", "headRefOid", "-q", ".headRefOid"], cwd).stdout.strip()
+        branch = run(["gh", "pr", "view", number, "--json", "headRefName", "-q", ".headRefName"], cwd).stdout.strip()
+        head = run(["git", "rev-parse", "--verify", "-q", f"origin/{branch}"], cwd).stdout.strip() if branch else ""
         if not head:
             sys.exit(f"PR #{number} не найден")
         state[number] = head
@@ -107,7 +110,7 @@ if stale is None:
 elif stale:
     blocks = []
     for pr, since, fresh in stale:
-        commits = "\n".join(f"    {commit['oid'][:9]} {commit['messageHeadline']}" for commit in fresh)
+        commits = "\n".join(f"    {oid[:9]} {headline}" for oid, headline in reversed(fresh))
         body = "\n".join("    > " + line for line in (pr["body"] or "(пусто)").splitlines())
         blocks.append(f"- PR #{pr['number']} «{pr['title']}», описание от {since[:16].replace('T', ' ')} UTC. "
                       f"Коммиты после него:\n{commits}\n  Текущее описание:\n{body}")
