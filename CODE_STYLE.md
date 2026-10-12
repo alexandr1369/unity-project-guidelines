@@ -83,6 +83,7 @@
   public DialogueBase OpenDialogue =>
       _dialoguesQueue[0];
   ```
+- Имя метода, свойства или параметра называет то, что видит вызывающий, словами домена (`PlaySlotUnlock`, `IsUnlockingSlot`, `PlayOpen(bool withBeater)`), а не внутреннюю механику или жаргон анимации (`beaten`). Слово, уже занятое другим понятием модуля, в новое имя не берётся: в доске `Cover` — крышка трея, поэтому флаг «катсцена закрывает доску» называется `IsBoardHidden`, а не `IsCoveringBoard`.
 - Метод и свойство, которые возвращают `bool`, называются вопросом: `Is...`, `Has...`, `Can...` (`IsSlotBusy`, `IsCoinSelectable`, `HasBroomMoves`, `CanTickTimer`). Утвердительная форма (`SlotIsBusy`, `MoveIsValid`, `BoardHoldsGoalCoins`) не используется. `Try...` с `out`-параметром остаётся как есть.
 - Составное условие готовности или доступности, которое отвечает на один смысловой вопрос,
   выносить в приватное вычисляемое свойство (`CanTickTimer`, `CanInteract`). Тогда основной метод
