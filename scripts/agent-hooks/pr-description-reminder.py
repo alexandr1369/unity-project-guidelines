@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Хук Claude Code и Codex (PostToolUse): после любого git push и gh pr create называет открытые PR,
 # в которых есть коммиты новее последней правки описания, и кладёт агенту правила описания из GIT_WORKFLOW.md.
+# После git commit перечисляет новые типы коммита и просит назвать, откуда взято каждое слово (CODE_STYLE.md).
 # Напоминает снова, пока описание не обновлено или сверка не отмечена: pr-description-reminder.py --checked <номер PR>...
 import json
 import os
@@ -68,6 +69,21 @@ def mark_checked(numbers, cwd):
     json.dump(state, open(state_path(cwd), "w", encoding="utf-8"), indent=1)
 
 
+def new_type_names(cwd):
+    if len(run(["git", "rev-list", "--parents", "-n", "1", "HEAD"], cwd).stdout.split()) > 2:
+        return []
+    names = []
+    path = ""
+    for line in run(["git", "show", "--format=", "-U0", "HEAD", "--", "*.cs"], cwd).stdout.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:]
+            continue
+        match = re.match(r"\+.*\b(?:class|struct|enum|interface)\s+(\w+)", line)
+        if match and "/Generated/" not in path and "/Tests/" not in path and match.group(1) not in names:
+            names.append(match.group(1))
+    return names
+
+
 def workflow_rules():
     workflow = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "GIT_WORKFLOW.md")
     rules = []
@@ -93,11 +109,22 @@ if isinstance(command, list):
 START = r"(?:^|[;&|(]\s*)"
 is_push = re.search(START + r"git (?:-C \S+ )?push\b", command, re.M)
 is_pr_create = re.search(START + r"gh pr create\b", command, re.M)
-if not is_push and not is_pr_create:
+is_commit = re.search(START + r"git (?:-C \S+ )?commit\b(?!-)", command, re.M)
+if not is_push and not is_pr_create and not is_commit:
     sys.exit(0)
 
 target = re.search(START + r"(?:cd|git -C) (\S+)", command, re.M)
 cwd = os.path.expanduser(target.group(1).strip("'\"")) if target else data.get("cwd") or os.getcwd()
+
+if is_commit and not is_push and not is_pr_create:
+    names = new_type_names(cwd)
+    if names:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": (
+            "Новые имена в коммите: " + ", ".join(names) + ". Для каждого до push назови, откуда слово: так понятие уже "
+            "называется в модуле или соседних системах, в методах его MonoBehaviour, или так его видит игрок и ГД "
+            "(CODE_STYLE.md, «Перед тем как назвать…»). Слово, придуманное с нуля, — переименовать, как Retiring → "
+            "Leaving и Reserve → Next в обновлении доски.")}}, ensure_ascii=False))
+    sys.exit(0)
 
 try:
     stale = stale_pull_requests(cwd)
