@@ -123,7 +123,7 @@ if is_commit and not is_push and not is_pr_create:
     if names:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": (
             "Новые имена в коммите: " + ", ".join(names) + ". Для каждого до push назови, откуда слово: так понятие уже "
-            "называется в модуле или соседних системах, в методах его MonoBehaviour, или так его видит игрок и ГД "
+            "называется в модуле или соседних системах, в методах его MonoBehaviour, или так его видит игрок; имя ключа из конфига ГД не источник "
             "(CODE_STYLE.md, «Перед тем как назвать…»). Слово, придуманное с нуля, — переименовать, как Retiring → "
             "Leaving и Reserve → Next в обновлении доски.")}}, ensure_ascii=False))
     sys.exit(0)
