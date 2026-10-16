@@ -180,6 +180,27 @@ def new_type_words(cwd):
     return found
 
 
+def nested_feature(cwd):
+    # OPTIONAL_ENTITAS.md, «Состав и порядок фич»: фичи добавляет только корневая фича, которую создаёт состояние;
+    # фича модуля содержит только системы.
+    found = []
+    for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
+        if not path.endswith("Feature.cs") or any(part in path for part in ("/Generated/", "/Tests/")):
+            continue
+        lines = run(["git", "show", f":{path}"], cwd).split("\n")
+        owner = next((m.group(1) for m in (re.search(r"class (\w+Feature)\s*:\s*Feature\b", line) for line in lines) if m), None)
+        if not owner:
+            continue
+        creations = run(["git", "grep", "--cached", "-h", f"Create<{owner}>(", "--", "*.cs", ":!*/Tests/*"], cwd).splitlines()
+        if any("Add(" not in line for line in creations):
+            continue
+        for number in sorted(added_lines(cwd, path)):
+            match = number <= len(lines) and re.search(r"Create<(\w+Feature)>\(", lines[number - 1])
+            if match:
+                found.append(f"{path}:{number}: фича {match.group(1)} внутри фичи модуля {owner}: регистрируй её в корневой фиче, рядом, в нужной фазе")
+    return found
+
+
 def violations(cwd):
     found = []
     for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
@@ -189,7 +210,7 @@ def violations(cwd):
         added = added_lines(cwd, path)
         for check in CHECKS:
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added))
-    return found + new_type_words(cwd)
+    return found + new_type_words(cwd) + nested_feature(cwd)
 
 
 if __name__ == "__main__":
