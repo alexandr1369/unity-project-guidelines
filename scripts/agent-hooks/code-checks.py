@@ -110,7 +110,17 @@ def vertical_call(lines, added):
         yield number, "аргументы вызова разложены по строкам: держи их в строке и переноси только хвост"
 
 
-CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call)
+def multiline_expression_method(lines, added):
+    # CODE_STYLE.md, «Форматирование» и «Методы»: метод через => — только когда всё тело одна строка после =>;
+    # иначе тело метода в фигурных скобках. Свойства-условия (CanX =>) сюда не попадают.
+    for number in sorted(added):
+        if number >= len(lines):
+            continue
+        if re.match(r"\s*(public|private|protected|internal)\b.*\w(<[^>]*>)?\(.*\)\s*=>\s*$", lines[number - 1]) and not lines[number].rstrip().endswith(";"):
+            yield number, "метод через => занимает несколько строк: перепиши телом в фигурных скобках"
+
+
+CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method)
 
 
 def violations(cwd):
