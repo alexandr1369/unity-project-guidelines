@@ -37,10 +37,10 @@ def return_spacing(lines, added):
         if previous < 0 or (len(lines[previous]) - len(lines[previous].lstrip()) < indent and lines[previous].strip() != "{"):
             continue
         start = index
-        while start >= 0 and not (lines[start].strip() == "{" and len(lines[start]) - len(lines[start].lstrip()) == indent - 4):
+        while start >= 0 and not (lines[start].strip() == "{" and len(lines[start]) - len(lines[start].lstrip()) < indent):
             start -= 1
         end = index
-        while end < len(lines) and not (lines[end].strip() == "}" and len(lines[end]) - len(lines[end].lstrip()) == indent - 4):
+        while end < len(lines) and not (lines[end].strip() == "}" and len(lines[end]) - len(lines[end].lstrip()) < indent):
             end += 1
         if start < 0 or not added.intersection(range(start + 1, end + 2)):
             continue
