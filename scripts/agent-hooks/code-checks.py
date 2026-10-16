@@ -120,15 +120,7 @@ def multiline_expression_method(lines, added):
             yield number, "метод через => занимает несколько строк: перепиши телом в фигурных скобках"
 
 
-def group_count(lines, added):
-    # OPTIONAL_ENTITAS.md, «Системы»: group.count не управляет логикой — наличие сущности проверяется обходом
-    # выборки (foreach с ранним выходом или флагом), общая проверка нескольких систем — extension фичи.
-    for number in sorted(added):
-        if number <= len(lines) and re.search(r"\b_\w+\.count\b", lines[number - 1]):
-            yield number, "group.count в логике: проверь наличие обходом выборки (foreach с return/break)"
-
-
-CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, group_count)
+CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method)
 
 
 def violations(cwd):
