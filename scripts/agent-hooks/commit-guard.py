@@ -1,9 +1,28 @@
 #!/usr/bin/env python3
 # Хук Claude Code и Codex (PreToolUse): не даёт агенту коммитить с глаголом git-действия в сообщении
-# («Закоммитил», «Запушил») и индексировать всё подряд (`git commit -a`, `git add -A`). Правила — GIT_WORKFLOW.md.
+# («Закоммитил», «Запушил»), индексировать всё подряд (`git commit -a`, `git add -A`) и коммитить код, который не проходит
+# механические проверки правил из code-checks.py. Правила — GIT_WORKFLOW.md и AI_COLLABORATION_GUIDELINES.md.
+import importlib
 import json
+import os
 import re
 import sys
+
+
+def commit_directory(command, cwd):
+    # Папка, где выполнится `git commit`: последний `cd`/`git -C` перед ним, с подстановкой ~, $HOME и переменных команды.
+    variables = {"HOME": os.path.expanduser("~")}
+    directory = cwd
+    for token in re.finditer(r"(\w+)=([^\s;&|]+)|\bcd\s+([^\s;&|]+)|\bgit\s+-C\s+([^\s;&|]+)", command):
+        name, value, cd_path, git_path = token.groups()
+        expand = lambda text: os.path.expanduser(re.sub(r"\$\{?(\w+)\}?", lambda m: variables.get(m.group(1), m.group(0)), text.strip("\"'")))
+        if name:
+            variables[name] = expand(value)
+        else:
+            path = expand(cd_path or git_path)
+            directory = path if os.path.isabs(path) else os.path.join(directory, path)
+    return directory
+
 
 data = json.load(sys.stdin)
 tool_input = data.get("tool_input") or {}
@@ -25,9 +44,18 @@ if re.search(START + r"git commit\b[^\n;&|]*\s(?:-[a-zA-Z]*a[a-zA-Z]*|--all)\b",
 if re.search(START + r"git add\b[^\n;&|]*\s(?:-A|--all)\b", unquoted, re.M):
     reasons.append("`git add -A` индексирует всё подряд: добавлять файлы по путям задачи")
 
+commit = re.search(START + r"git\b[^\n;&|]*\bcommit\b(?!-)", command, re.M)
+if commit:
+    repo = commit_directory(command[:commit.end()], data.get("cwd") or ".")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    code_checks = importlib.import_module("code-checks")
+    found = code_checks.violations(repo) if os.path.isdir(repo) else []
+    if found:
+        reasons.append("код в индексе нарушает правила _guidelines:\n" + "\n".join(found[:15]))
+
 if reasons:
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason": "; ".join(reasons) + ". Перечитай «Правила коммитов» в GIT_WORKFLOW.md."}},
+        "permissionDecisionReason": "; ".join(reasons) + ". Сверься с правилом: коммиты — GIT_WORKFLOW.md, код — CODE_STYLE.md и OPTIONAL_ENTITAS.md."}},
         ensure_ascii=False))
