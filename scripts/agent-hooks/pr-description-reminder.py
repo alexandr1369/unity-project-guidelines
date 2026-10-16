@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Хук Claude Code и Codex (PostToolUse): после любого git push и gh pr create называет открытые PR,
 # в которых есть коммиты новее последней правки описания, и кладёт агенту правила описания из GIT_WORKFLOW.md.
-# После git commit перечисляет новые типы коммита и просит назвать, откуда взято каждое слово (CODE_STYLE.md).
+# После git commit перечисляет новые типы и публичные поля и свойства коммита и просит назвать, откуда взято каждое
+# слово (CODE_STYLE.md).
 # Напоминает снова, пока описание не обновлено или сверка не отмечена: pr-description-reminder.py --checked <номер PR>...
 import json
 import os
@@ -78,7 +79,8 @@ def new_type_names(cwd):
         if line.startswith("+++ "):
             path = line[4:]
             continue
-        match = re.match(r"\+.*\b(?:class|struct|enum|interface)\s+(\w+)", line)
+        match = (re.match(r"\+.*\b(?:class|struct|enum|interface)\s+(\w+)", line)
+                 or re.match(r"\+\s*(?:\[[^\]]*\]\s*)*public\s+(?!class|struct|enum|interface|static|override)[\w<>\[\],. ?]+?\s+(\w+)\s*(?:[;={]|=>)", line))
         if match and "/Generated/" not in path and "/Tests/" not in path and match.group(1) not in names:
             names.append(match.group(1))
     return names
