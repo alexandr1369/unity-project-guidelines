@@ -3,6 +3,8 @@
 # ассистента и смотрит только индексированные изменения: нарушение в строках, которые коммит не трогает, не мешает.
 # Каждое новое правило, которое можно проверить механически, добавляется сюда (AI_COLLABORATION_GUIDELINES.md,
 # «Проверка нового правила»).
+import json
+import os
 import re
 import subprocess
 import sys
@@ -123,6 +125,61 @@ def multiline_expression_method(lines, added):
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method)
 
 
+VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
+
+
+def stem(word):
+    word = word.lower()
+    for suffix in ("ing", "ed", "es", "s", "e"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[:-len(suffix)]
+    return word
+
+
+def camel_words(name):
+    return re.findall(r"[A-Z]+(?=[A-Z][a-z]|\d|\b)|[A-Z]?[a-z]+|\d+", name)
+
+
+def approved_words_path(cwd):
+    return os.path.join(cwd, run(["git", "rev-parse", "--git-common-dir"], cwd).strip(), "approved-type-words.json")
+
+
+def approved_words(cwd):
+    try:
+        return set(json.load(open(approved_words_path(cwd), encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
+def approve_words(words, cwd):
+    approved = approved_words(cwd) | {stem(word) for word in words}
+    json.dump(sorted(approved), open(approved_words_path(cwd), "w", encoding="utf-8"), indent=1)
+    print("Одобрены слова: " + ", ".join(words))
+
+
+def new_type_words(cwd):
+    # CODE_STYLE.md, «Перед тем как назвать…»: слово в имени нового типа берут из модуля, MonoBehaviour фичи или того,
+    # что видит игрок. Слова нет в коде проекта до коммита — оно новое, и вводит его только владелец.
+    identifiers = run(["git", "grep", "-h", "-o", "-I", "-E", "[A-Za-z][A-Za-z0-9_]*", "HEAD", "--", "*.cs"] + VOCABULARY_EXCLUDES, cwd)
+    vocabulary = {stem(word) for identifier in set(identifiers.split()) for word in camel_words(identifier)}
+    vocabulary |= approved_words(cwd)
+    found = []
+    for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
+        if not path.endswith(".cs") or any(part in path for part in ("/Generated/", "/Tests/", "/Editor/")):
+            continue
+        lines = run(["git", "show", f":{path}"], cwd).split("\n")
+        for number in sorted(added_lines(cwd, path)):
+            match = number <= len(lines) and re.search(r"\b(?:class|struct|enum|interface)\s+(\w+)", lines[number - 1])
+            if not match:
+                continue
+            words = [word for word in camel_words(match.group(1)) if not word.isdigit() and stem(word) not in vocabulary]
+            if words:
+                found.append(f"{path}:{number}: новое слово {', '.join(words)} в имени {match.group(1)}: возьми слово из модуля, "
+                             f"его MonoBehaviour или того, что видит игрок; новое понятие — согласуй с владельцем и после его "
+                             f"«да» одобри: code-checks.py --approve-word {' '.join(words)}")
+    return found
+
+
 def violations(cwd):
     found = []
     for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
@@ -132,8 +189,11 @@ def violations(cwd):
         added = added_lines(cwd, path)
         for check in CHECKS:
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added))
-    return found
+    return found + new_type_words(cwd)
 
 
 if __name__ == "__main__":
-    print("\n".join(violations(sys.argv[1] if len(sys.argv) > 1 else ".")))
+    if len(sys.argv) > 2 and sys.argv[1] == "--approve-word":
+        approve_words(sys.argv[2:], os.getcwd())
+    else:
+        print("\n".join(violations(sys.argv[1] if len(sys.argv) > 1 else ".")))
