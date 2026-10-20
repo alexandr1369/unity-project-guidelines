@@ -201,6 +201,30 @@ def nested_feature(cwd):
     return found
 
 
+def term_translations(lines, added):
+    # UI_HIERARCHY_GUIDELINES.md, «Текст и ссылки»: новый или изменённый ключ заполнен на всех языках проекта.
+    languages = sum(1 for line in lines if re.match(r"    - Name: ", line))
+    found = []
+    for number, line in enumerate(lines, 1):
+        term = re.match(r"    - Term: (.+)", line)
+        if not term:
+            continue
+        end = next((i for i in range(number, len(lines)) if re.match(r"    \S", lines[i])), len(lines))
+        values = [value.strip() for value in lines[number:end] if re.match(r"      - ", value)]
+        if added & set(range(number, end + 1)) and (len(values) < languages or any(value in ("-", '- ""') for value in values)):
+            found.append((number, f"ключ {term.group(1)} заполнен не на всех {languages} языках: переведи его сразу"))
+    return found
+
+
+def untranslated_terms(cwd):
+    found = []
+    for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
+        if path.endswith("I2Languages.asset"):
+            lines = run(["git", "show", f":{path}"], cwd).split("\n")
+            found.extend(f"{path}:{number}: {message}" for number, message in term_translations(lines, added_lines(cwd, path)))
+    return found
+
+
 def violations(cwd):
     found = []
     for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
@@ -210,7 +234,7 @@ def violations(cwd):
         added = added_lines(cwd, path)
         for check in CHECKS:
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added))
-    return found + new_type_words(cwd) + nested_feature(cwd)
+    return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd)
 
 
 if __name__ == "__main__":
