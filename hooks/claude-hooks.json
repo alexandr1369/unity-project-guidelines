@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/questions-reminder.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/prompt-reminders.py\"",
             "timeout": 10
           }
         ]
