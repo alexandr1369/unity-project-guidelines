@@ -1,55 +1,110 @@
 # Общие правила Unity-проектов
 
-`unity-project-guidelines` — общий навык для Codex и Claude Code. [SKILL.md](SKILL.md)
-задаёт порядок работы и направляет к профильным документам. В них записаны командные
-соглашения, а особенности отдельного проекта остаются в его `AGENTS.md` и `CLAUDE.md`.
+Плагин `unity-project-guidelines` для Claude Code и Codex. Внутри навык с командными
+соглашениями — код, архитектура, Git, ревью, UI, тесты — и хуки, которые часть правил
+проверяют прямо во время работы агента. [SKILL.md](skills/unity-project-guidelines/SKILL.md)
+задаёт порядок чтения и направляет к профильным документам. Особенности отдельного проекта
+остаются в его `AGENTS.md` и `CLAUDE.md`.
 
-## Подключение навыка
+## Установка
 
-Навык хранится в отдельном [Git-репозитории](https://github.com/alexandr1369/unity-project-guidelines).
-Оба агента используют один локальный клон через ссылки на папку `unity-project-guidelines`.
-Пример для macOS и Linux:
+Проще всего попросить своего агента:
+
+> Поставь плагин unity-project-guidelines по README
+> https://github.com/alexandr1369/unity-project-guidelines — для Claude Code, Codex
+> или обоих, смотря что у меня установлено.
+
+Агент выполняет шаги ниже для каждого установленного у человека агента.
+
+**Claude Code**
 
 ```sh
-mkdir -p "$HOME/agent-skills" "$HOME/.agents/skills" "$HOME/.claude/skills"
-git clone https://github.com/alexandr1369/unity-project-guidelines.git "$HOME/agent-skills/unity-project-guidelines"
-ln -s "$HOME/agent-skills/unity-project-guidelines" "$HOME/.agents/skills/unity-project-guidelines"
-ln -s "$HOME/agent-skills/unity-project-guidelines" "$HOME/.claude/skills/unity-project-guidelines"
+claude plugin marketplace add alexandr1369/unity-project-guidelines
+claude plugin install unity-project-guidelines@unity-project-guidelines
 ```
 
-Если установлен один агент, нужна только его ссылка. На Windows вместо символьных ссылок
-подходят junction-ссылки; для WSL навык устанавливается отдельно внутри WSL. При уже
-существующем подключении сначала проверяется его источник, чтобы не создать вторую копию.
+В приложении Claude те же две команды набираются через `/plugin` в поле ввода, каждая
+отдельным сообщением. Навык и хуки подхватываются в новой сессии.
+
+**Codex**
+
+```sh
+codex plugin marketplace add alexandr1369/unity-project-guidelines
+codex plugin add unity-project-guidelines@unity-project-guidelines
+```
+
+Затем запустить `codex`, открыть `/hooks`, разрешить хуки плагина и начать новый тред.
+Приложение Codex после установки перезапускается.
+
+**Перед установкой**
+
+- Нужны `python3` и `git`. `dotnet` нужен хуку сборки перед push; без него хук молчит.
+- Старую установку через ссылки убрать, иначе навык и хуки сработают дважды:
+  папки-ссылки `~/.claude/skills/unity-project-guidelines` и
+  `~/.agents/skills/unity-project-guidelines`, хуки со словом `agent-hooks` в
+  `~/.claude/settings.json` и `~/.codex/hooks.json`.
+
+## Обновление
+
+Версия плагина — последний коммит `main`, отдельного номера нет.
+
+```sh
+claude plugin marketplace update unity-project-guidelines
+claude plugin update unity-project-guidelines@unity-project-guidelines
+```
+
+```sh
+codex plugin marketplace upgrade unity-project-guidelines
+codex plugin add unity-project-guidelines@unity-project-guidelines
+```
+
+Новые правила действуют со следующей сессии агента.
+
+## Удаление
+
+```sh
+claude plugin uninstall unity-project-guidelines@unity-project-guidelines
+codex plugin remove unity-project-guidelines
+```
+
+## Что внутри
+
+| Путь | Что это |
+| --- | --- |
+| `skills/unity-project-guidelines/` | Навык: `SKILL.md` и профильные документы |
+| `hooks/` | Подключение хуков: `claude-hooks.json` и `codex-hooks.json` |
+| `scripts/agent-hooks/commit-guard.py` | Перед `git commit`: не пускает коммит, который нарушает механически проверяемые правила кода и коммитов (`code-checks.py`) |
+| `scripts/agent-hooks/verify-builds.sh` | Перед `git push`: собирает свои `.csproj` проекта и не пускает push, если сборка падает |
+| `scripts/agent-hooks/pr-description-reminder.py` | После `git push` и `gh pr create`: просит сверить описание открытых PR; после коммита — назвать, откуда слова в новых именах |
+| `scripts/agent-hooks/questions-reminder.py` | На просьбу дать вопросы ГД или владельцу: кладёт агенту правило понятных вопросов |
+| `scripts/agent-hooks/mcp-long-command-guard.py` | Не пускает сборку и смену платформы через Unity MCP без защиты от повтора |
+| `scripts/git-hooks/pre-commit` | Необязательный git-хук Unity-репозитория: сверка `AGENTS.md` и `CLAUDE.md` |
+| `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/` | Манифесты плагина и маркетплейса для Claude Code и Codex |
 
 ## Подключение проекта
 
-В корне Unity-репозитория находятся побайтово одинаковые `AGENTS.md` и `CLAUDE.md`.
-Они требуют использовать навык и описывают особенности конкретного проекта: пути,
-наличие Entitas, плагины и правила Git. Пример общего блока:
+В корне Unity-репозитория лежат побайтово одинаковые `AGENTS.md` и `CLAUDE.md`. Они требуют
+использовать навык и описывают особенности проекта: пути, наличие Entitas, плагины и правила
+Git. Общий блок:
 
 ```md
 ## Общие Unity-правила
 
-В проекте применяется навык `unity-project-guidelines`.
-Перед изменениями агент читает `SKILL.md`, `CODE_STYLE.md`, `GIT_WORKFLOW.md`
-и профильные документы по задаче.
-Codex: `~/.agents/skills/unity-project-guidelines/SKILL.md`.
-Claude Code: `~/.claude/skills/unity-project-guidelines/SKILL.md`.
-Если навык недоступен, агент сообщает об этом до изменений проекта.
-`AGENTS.md` и `CLAUDE.md` обновляются вместе и остаются побайтово одинаковыми.
+Перед работой в этом проекте обязательно используй навык `unity-project-guidelines` из
+одноимённого плагина: прочитай его `SKILL.md`, базовые и подходящие к задаче профильные
+документы. Ссылки внутри навыка разрешаются от папки его `SKILL.md`.
+Если навыка нет в списке, до изменений проекта сообщи, что плагин не установлен
+(установка — README https://github.com/alexandr1369/unity-project-guidelines);
+не считай общие правила прочитанными.
+Особенности ниже дополняют общие правила. Изменяй `AGENTS.md` и `CLAUDE.md` вместе,
+сохраняя их побайтовое равенство.
 ```
 
-Общие правила изменяются в профильных документах этого репозитория; правила одной игры —
-в её паре `AGENTS.md` и `CLAUDE.md`. Папка `scripts/git-hooks` содержит необязательную
-проверку равенства этой пары.
-Папка `scripts/agent-hooks` — хуки ассистентов, общие для Claude Code и Codex: подключаются
-в `~/.claude/settings.json` и `~/.codex/hooks.json` одной и той же командой на скрипт.
+Необязательная проверка равенства пары подключается в клоне проекта:
+`git config core.hooksPath scripts/git-hooks`, с копией `scripts/git-hooks/pre-commit`.
 
-## Обновление и проверка
+## Изменение правил
 
-Обновление локального клона выполняется через `git pull`. После подключения или обновления
-в новой сессии агента проверяются доступность `SKILL.md` и чтение профильных документов.
-
-Для передачи без Git возможен ZIP со всеми корневыми `*.md` и каталогом `scripts`, без
-`.git`, локальных задач и файлов Unity-проектов. Такой архив остаётся снимком и сам не
-обновляется.
+Общие правила меняются в профильных документах `skills/unity-project-guidelines/`, правила
+одной игры — в её паре `AGENTS.md` и `CLAUDE.md`. После push в `main` установленный плагин
+обновляется командами из раздела «Обновление».

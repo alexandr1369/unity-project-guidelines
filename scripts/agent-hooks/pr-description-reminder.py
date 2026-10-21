@@ -87,7 +87,7 @@ def new_type_names(cwd):
 
 
 def workflow_rules():
-    workflow = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "GIT_WORKFLOW.md")
+    workflow = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "skills", "unity-project-guidelines", "GIT_WORKFLOW.md")
     rules = []
     for line in open(workflow, encoding="utf-8"):
         if not rules and not line.startswith("- Описание PR по умолчанию"):

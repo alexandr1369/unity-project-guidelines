@@ -1,0 +1,19 @@
+{
+  "name": "unity-project-guidelines",
+  "description": "Общие правила Unity-проектов команды: код, архитектура, Git, ревью и хуки, которые их проверяют.",
+  "author": {
+    "name": "alexandr1369",
+    "url": "https://github.com/alexandr1369"
+  },
+  "homepage": "https://github.com/alexandr1369/unity-project-guidelines",
+  "repository": "https://github.com/alexandr1369/unity-project-guidelines",
+  "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "Unity Project Guidelines",
+    "shortDescription": "Общие правила Unity-проектов команды",
+    "developerName": "alexandr1369",
+    "category": "Coding",
+    "capabilities": ["Instructions", "Lifecycle hooks"]
+  }
+}

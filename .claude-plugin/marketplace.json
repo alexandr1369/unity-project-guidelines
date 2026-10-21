@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "unity-project-guidelines",
+  "description": "Общие правила Unity-проектов команды.",
+  "owner": {
+    "name": "alexandr1369",
+    "url": "https://github.com/alexandr1369"
+  },
+  "plugins": [
+    {
+      "name": "unity-project-guidelines",
+      "description": "Общие правила Unity-проектов команды: код, архитектура, Git, ревью и хуки, которые их проверяют.",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}
