@@ -122,7 +122,23 @@ def multiline_expression_method(lines, added):
             yield number, "метод через => занимает несколько строк: перепиши телом в фигурных скобках"
 
 
-CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method)
+def request_before_save(lines, added):
+    # CODE_STYLE.md, порядок в системе: запрос на сохранение фиксирует действие самой системы и стоит сразу за ним;
+    # запрос, который запускает следующее действие в другой системе (рестарт уровня, метла), идёт после сохранения.
+    for index, line in enumerate(lines):
+        if not re.search(r"\.isSave\w*Request = true;", line) or index < 2:
+            continue
+        previous = index - 2
+        while previous >= 0 and not lines[previous].strip():
+            previous -= 1
+        if previous > 0 and lines[previous].strip() == "}":
+            previous -= 1
+        request = previous >= 0 and re.search(r"\.(is\w+Request = true;|Add\w+Request\()", lines[previous])
+        if request and "Save" not in request.group(0) and added.intersection({index + 1, previous + 1}):
+            yield index + 1, "запрос другой системе стоит перед сохранением: сохранение закрывает действие этой системы, запрос следующего шага — после него"
+
+
+CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save)
 
 
 VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
