@@ -241,8 +241,28 @@ def inline_member_condition(lines, added):
             yield index + 1, "условие из полей и свойств класса: вынеси в приватное свойство-вопрос (CanShowDialogue, CanDeal)"
 
 
+def noneof_leaf(lines, added):
+    # OPTIONAL_ENTITAS.md, white-list и black-list: NoneOf — только «листик», маркер исключает та же система, что его ставит.
+    # Иначе состояние делается положительным и берётся в AllOf. View ставит фабрика вида, Destructed — отдельное правило.
+    text = "\n".join(lines)
+    for match in re.finditer(r"\.NoneOf\(", text):
+        depth, close = 0, match.end() - 1
+        while close < len(text):
+            depth += {"(": 1, ")": -1}.get(text[close], 0)
+            if depth == 0:
+                break
+            close += 1
+        start, end = text.count("\n", 0, match.start()) + 1, text.count("\n", 0, close) + 1
+        if not added.intersection(range(start, end + 1)):
+            continue
+        for component in re.findall(r"\w+Matcher\.(\w+)", text[match.start():close + 1]):
+            if component in ("View", "Destructed") or re.search(rf"\bis{component} = true|\.(Add|Replace){component}\(", text):
+                continue
+            yield start, f"NoneOf({component}) — не листик: маркер ставит не эта система; сделай положительное состояние и возьми его в AllOf"
+
+
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
-          single_return_getter, awake_subscription, inline_member_condition)
+          single_return_getter, awake_subscription, inline_member_condition, noneof_leaf)
 PATH_CHECKS = (refresh_method_name,)
 
 
