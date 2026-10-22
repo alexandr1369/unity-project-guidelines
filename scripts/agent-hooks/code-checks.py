@@ -241,10 +241,11 @@ def inline_member_condition(lines, added):
             yield index + 1, "условие из полей и свойств класса: вынеси в приватное свойство-вопрос (CanShowDialogue, CanDeal)"
 
 
-def noneof_leaf(lines, added):
-    # OPTIONAL_ENTITAS.md, white-list и black-list: NoneOf — только «листик», маркер исключает та же система, что его ставит.
-    # Иначе состояние делается положительным и берётся в AllOf. View ставит фабрика вида, Destructed — отдельное правило.
-    text = "\n".join(lines)
+PROCESS_MARKER = re.compile(r"(ing|Processing|Required|Uninitialized)$")
+CODE_EXCLUDES = ("/Generated/", "/Tests/", "/Plugins/")
+
+
+def noneof_clauses(text):
     for match in re.finditer(r"\.NoneOf\(", text):
         depth, close = 0, match.end() - 1
         while close < len(text):
@@ -252,17 +253,56 @@ def noneof_leaf(lines, added):
             if depth == 0:
                 break
             close += 1
-        start, end = text.count("\n", 0, match.start()) + 1, text.count("\n", 0, close) + 1
-        if not added.intersection(range(start, end + 1)):
-            continue
-        for component in re.findall(r"\w+Matcher\.(\w+)", text[match.start():close + 1]):
-            if component in ("View", "Destructed") or re.search(rf"\bis{component} = true|\.(Add|Replace){component}\(", text):
+        yield text.count("\n", 0, match.start()) + 1, text.count("\n", 0, close) + 1, re.findall(r"\w+Matcher\.(\w+)", text[match.start():close + 1])
+
+
+def code_feature(path):
+    folder = os.path.dirname(path)
+    return os.path.dirname(folder) if os.path.basename(folder) == "Systems" else folder
+
+
+def noneof_problems(code, changed):
+    # OPTIONAL_ENTITAS.md, white-list и black-list: NoneOf — по маркеру «уже сделано», который ставят и исключают системы
+    # одной фичи, или по идущему процессу (…ing, …Processing, …Required, …Uninitialized). Маркер, который исключают
+    # в фиче, где его не ставят, — фильтр «кто в выборке» (выход из игры): только положительным <Субъект>Active в AllOf.
+    # View ставит фабрика вида, у Destructed отдельное правило.
+    excluders = {}
+    for path, text in code.items():
+        for _, _, components in noneof_clauses(text):
+            for component in components:
+                excluders.setdefault(component, set()).add(path)
+    verdicts = {}
+    for path, added in changed.items():
+        for start, end, components in noneof_clauses(code[path]):
+            if not added.intersection(range(start, end + 1)):
                 continue
-            yield start, f"NoneOf({component}) — не листик: маркер ставит не эта система; сделай положительное состояние и возьми его в AllOf"
+            for component in components:
+                if component in ("View", "Destructed") or PROCESS_MARKER.search(component):
+                    continue
+                if component not in verdicts:
+                    setter = re.compile(rf"\bis{component}\s*=\s*\w+|\.(Add|Replace){component}\(")
+                    features = {code_feature(other) for other, text in code.items() if setter.search(text)}
+                    verdicts[component] = all(code_feature(other) in features for other in excluders[component])
+                if not verdicts[component]:
+                    yield path, start, f"NoneOf({component}) — маркер исключают и вне фичи, где его ставят: это фильтр «кто в выборке»; сделай положительное состояние <Субъект>Active и возьми его в AllOf"
+
+
+def noneof_marker(cwd):
+    changed = {path: added_lines(cwd, path) for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split()
+               if path.endswith(".cs") and not any(part in path for part in CODE_EXCLUDES)}
+    if not changed:
+        return []
+    code = {}
+    for path in run(["git", "ls-files", "*.cs"], cwd).split():
+        if not any(part in path for part in CODE_EXCLUDES) and os.path.isfile(os.path.join(cwd, path)):
+            code[path] = open(os.path.join(cwd, path), encoding="utf-8-sig", errors="ignore").read()
+    for path in changed:
+        code[path] = run(["git", "show", f":{path}"], cwd)
+    return [f"{path}:{number}: {message}" for path, number, message in noneof_problems(code, changed)]
 
 
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
-          single_return_getter, awake_subscription, inline_member_condition, noneof_leaf)
+          single_return_getter, awake_subscription, inline_member_condition)
 PATH_CHECKS = (refresh_method_name,)
 
 
@@ -379,7 +419,7 @@ def violations(cwd):
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added))
         for check in PATH_CHECKS:
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added, path))
-    return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd)
+    return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd)
 
 
 if __name__ == "__main__":
