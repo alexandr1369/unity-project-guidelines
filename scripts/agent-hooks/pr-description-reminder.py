@@ -86,6 +86,21 @@ def new_type_names(cwd):
     return names
 
 
+def new_components(cwd):
+    if len(run(["git", "rev-list", "--parents", "-n", "1", "HEAD"], cwd).stdout.split()) > 2:
+        return []
+    components = []
+    path = ""
+    for line in run(["git", "show", "--format=", "-U0", "HEAD", "--", "*.cs"], cwd).stdout.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:]
+            continue
+        match = re.match(r"\+.*\bclass\s+(\w+)\s*:\s*I(?:Saved)?Component\b", line)
+        if match and "/Generated/" not in path and "/Tests/" not in path:
+            components.append(match.group(1))
+    return components
+
+
 def workflow_rules():
     workflow = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "skills", "unity-project-guidelines", "GIT_WORKFLOW.md")
     rules = []
@@ -120,12 +135,21 @@ cwd = os.path.expanduser(target.group(1).strip("'\"")) if target else data.get("
 
 if is_commit and not is_push and not is_pr_create:
     names = new_type_names(cwd)
+    components = new_components(cwd)
+    messages = []
     if names:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": (
+        messages.append(
             "Новые имена в коммите: " + ", ".join(names) + ". Для каждого до push назови, откуда слово: так понятие уже "
             "называется в модуле или соседних системах, в методах его MonoBehaviour, или так его видит игрок; имя ключа из конфига ГД не источник "
             "(CODE_STYLE.md, «Перед тем как назвать…»). Слово, придуманное с нуля, — переименовать, как Retiring → "
-            "Leaving и Reserve → Next в обновлении доски.")}}, ensure_ascii=False))
+            "Leaving и Reserve → Next в обновлении доски.")
+    if components:
+        messages.append(
+            "Новые компоненты: " + ", ".join(components) + ". Для каждого до push назови существующий факт, который уже говорит то же самое: "
+            "компонент, группу, состояние действия. Нашёлся — новый компонент не нужен: CoinsMoved дублировал Animating с FromSlotId/ToSlotId "
+            "у принятого хода. Не нашёлся — назови владельца, кто ставит, кто читает и когда он умирает (OPTIONAL_ENTITAS.md, «Новые компоненты»).")
+    if messages:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": " ".join(messages)}}, ensure_ascii=False))
     sys.exit(0)
 
 try:
