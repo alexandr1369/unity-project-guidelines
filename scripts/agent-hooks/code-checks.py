@@ -180,8 +180,45 @@ def refresh_method_name(lines, added, path=""):
             yield number, "метод с Refresh вне системы: называй его Update… по обновляемой части"
 
 
+def condition_operands(condition):
+    depth, current, operands, index = 0, "", [], 0
+    while index < len(condition):
+        char = condition[index]
+        depth += (char == "(") - (char == ")")
+        if depth == 0 and condition[index:index + 2] in ("&&", "||"):
+            operands.append(current.strip())
+            current, index = "", index + 2
+            continue
+        current += char
+        index += 1
+    return operands + [current.strip()]
+
+
+MEMBER_OPERAND = re.compile(r"^!?(_\w+|[A-Z]\w*)(\.\w+(\(\))?)*(\s*(==|!=|<=|>=|<|>)\s*(null|true|false|\d+(\.\d+)?f?|_\w+(\.\w+)*|[A-Z]\w*(\.\w+)*))?$")
+
+
+def inline_member_condition(lines, added):
+    # CODE_STYLE.md, «Поля и свойства»: условие из двух и больше проверок, собранное только из полей, свойств и
+    # сервисов класса, выносится в приватное свойство-вопрос; в строке остаются условия на локальных и параметрах.
+    declared = {match.group(1) for match in (re.match(r"\s*(?:\[.*\]\s*)*(?:public|private|protected|internal)\b[^(=]*?\b(\w+)\s*(?:\{|=>|=|;|$)", line) for line in lines) if match}
+    for index, line in enumerate(lines):
+        match = re.match(r"\s*(?:else )?if \((.*)$", line)
+        if not match:
+            continue
+        condition, end = match.group(1), index
+        while condition.count("(") + 1 > condition.count(")") and end + 1 < len(lines):
+            end += 1
+            condition += " " + lines[end].strip()
+        operands = condition_operands(condition[:condition.rfind(")")])
+        if len(operands) < 2 or not all(MEMBER_OPERAND.match(operand) for operand in operands):
+            continue
+        roots = [re.match(r"!?(\w+)", operand).group(1) for operand in operands]
+        if all(root.startswith("_") or root in declared for root in roots) and added.intersection(range(index + 1, end + 2)):
+            yield index + 1, "условие из полей и свойств класса: вынеси в приватное свойство-вопрос (CanShowDialogue, CanDeal)"
+
+
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
-          single_return_getter, awake_subscription)
+          single_return_getter, awake_subscription, inline_member_condition)
 PATH_CHECKS = (refresh_method_name,)
 
 
