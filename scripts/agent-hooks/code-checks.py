@@ -14,12 +14,24 @@ def run(args, cwd):
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True).stdout
 
 
-def added_lines(cwd, path):
+def changed_lines(cwd, path, base):
     numbers = set()
-    for match in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", run(["git", "diff", "--cached", "-U0", "--", path], cwd), re.M):
+    for match in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", run(["git", "diff", "--cached", "-U0"] + base + ["--", path], cwd), re.M):
         start, count = int(match.group(1)), int(match.group(2) or "1")
         numbers.update(range(start, start + count))
     return numbers
+
+
+def merge_head(cwd):
+    return run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd).strip()
+
+
+def added_lines(cwd, path):
+    # При слиянии строки вливаемой ветки уже прошли проверку в ней: новыми считаются только строки, которых нет
+    # ни в текущей ветке, ни во вливаемой, — разрешение конфликтов и правки поверх.
+    numbers = changed_lines(cwd, path, [])
+    merging = merge_head(cwd)
+    return numbers & changed_lines(cwd, path, [merging]) if merging else numbers
 
 
 def executable_lines(lines, start, end):
@@ -257,7 +269,9 @@ def approve_words(words, cwd):
 def new_type_words(cwd):
     # CODE_STYLE.md, «Перед тем как назвать…»: слово в имени нового типа берут из модуля, MonoBehaviour фичи или того,
     # что видит игрок. Слова нет в коде проекта до коммита — оно новое, и вводит его только владелец.
-    identifiers = run(["git", "grep", "-h", "-o", "-I", "-E", "[A-Za-z][A-Za-z0-9_]*", "HEAD", "--", "*.cs"] + VOCABULARY_EXCLUDES, cwd)
+    revisions = ["HEAD"] + ([merge_head(cwd)] if merge_head(cwd) else [])
+    identifiers = "\n".join(run(["git", "grep", "-h", "-o", "-I", "-E", "[A-Za-z][A-Za-z0-9_]*", revision, "--", "*.cs"] + VOCABULARY_EXCLUDES, cwd)
+                            for revision in revisions)
     vocabulary = {stem(word) for identifier in set(identifiers.split()) for word in camel_words(identifier)}
     vocabulary |= approved_words(cwd)
     found = []
