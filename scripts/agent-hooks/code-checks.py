@@ -39,7 +39,8 @@ def executable_lines(lines, start, end):
 
 
 def return_spacing(lines, added):
-    # CODE_STYLE.md: перед return пустая строка, если в блоке больше двух исполняемых строк; при двух — вплотную.
+    # CODE_STYLE.md: перед return пустая строка, если в блоке больше двух строк на экране; при двух — вплотную.
+    # Строки считаются по экрану: return с инициализатором объекта или цепочкой на несколько строк — уже не «две строки».
     for index, line in enumerate(lines):
         text = line.strip()
         if not (text == "return;" or text.startswith("return ") or text.startswith("yield break")):
@@ -58,7 +59,18 @@ def return_spacing(lines, added):
             end += 1
         if start < 0 or not added.intersection(range(start + 1, end + 2)):
             continue
-        count = executable_lines(lines, start + 1, index) + 1
+        statement_end = index
+        balance = 0
+        while statement_end < end:
+            text_line = lines[statement_end]
+            balance += text_line.count("{") + text_line.count("(") - text_line.count("}") - text_line.count(")")
+            if balance <= 0 and text_line.rstrip().endswith(";"):
+                break
+            statement_end += 1
+        before = executable_lines(lines, start + 1, index)
+        if before == 0:
+            continue
+        count = before + executable_lines(lines, index, statement_end + 1)
         blank = not lines[index - 1].strip()
         if count <= 2 and blank:
             yield index + 1, "перед return лишняя пустая строка: в блоке две строки"
