@@ -138,7 +138,51 @@ def request_before_save(lines, added):
             yield index + 1, "запрос другой системе стоит перед сохранением: сохранение закрывает действие этой системы, запрос следующего шага — после него"
 
 
-CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save)
+def block_body_end(lines, start):
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    end = start + 1
+    while end < len(lines) and not (lines[end].strip() == "}" and len(lines[end]) - len(lines[end].lstrip()) == indent):
+        end += 1
+    return end
+
+
+def single_return_getter(lines, added):
+    # CODE_STYLE.md, «Поля и свойства»: свойство из одного выражения пишется через =>, даже если условие
+    # переносится по строкам; get { return ...; } с единственным return не пишется.
+    for index, line in enumerate(lines):
+        if line.strip() != "get" or index + 1 >= len(lines) or lines[index + 1].strip() != "{":
+            continue
+        end = block_body_end(lines, index + 1)
+        body = " ".join(text.strip() for text in lines[index + 2:end] if text.strip())
+        if body.startswith("return ") and body.count(";") == 1 and added.intersection(range(index + 1, end + 2)):
+            yield index + 1, "свойство из одного выражения: пиши через =>, условие можно перенести по строкам"
+
+
+def awake_subscription(lines, added):
+    # CODE_STYLE.md, «Паттерны Unity»: подписки MonoBehaviour делаются в Start (или Initialize из Start) и снимаются
+    # в OnDestroy; Awake — только подготовка, без которой объект нельзя использовать сразу после Instantiate.
+    for index, line in enumerate(lines):
+        if not re.match(r"\s*(private|protected)?\s*void Awake\(\)", line):
+            continue
+        end = index + 2 if line.rstrip().endswith("=>") else block_body_end(lines, index + 1)
+        body = lines[index:end]
+        if any(re.search(r"\+=|AddListener\(", text) for text in body) and added.intersection(range(index + 1, end + 1)):
+            yield index + 1, "подписка в Awake: подписывайся в Start, снимай в OnDestroy"
+
+
+def refresh_method_name(lines, added, path=""):
+    # CODE_STYLE.md, «Типы»: Refresh в имени — только у ECS-системы, которая проталкивает состояние (Refresh…System);
+    # метод view, окна или сервиса, который перерисовывает или принимает данные, называется Update….
+    if path.endswith("System.cs") or "/Editor/" in path:
+        return
+    for number in sorted(added):
+        if number <= len(lines) and re.search(r"\b(void|bool|int|float|string|Task)\s+Refresh\w*\(", lines[number - 1]):
+            yield number, "метод с Refresh вне системы: называй его Update… по обновляемой части"
+
+
+CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
+          single_return_getter, awake_subscription)
+PATH_CHECKS = (refresh_method_name,)
 
 
 VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
@@ -250,6 +294,8 @@ def violations(cwd):
         added = added_lines(cwd, path)
         for check in CHECKS:
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added))
+        for check in PATH_CHECKS:
+            found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added, path))
     return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd)
 
 

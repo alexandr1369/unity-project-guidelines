@@ -45,6 +45,9 @@ if re.search(START + r"git add\b[^\n;&|]*\s(?:-A|--all)\b", unquoted, re.M):
     reasons.append("`git add -A` индексирует всё подряд: добавлять файлы по путям задачи")
 
 commit = re.search(START + r"git\b[^\n;&|]*\bcommit\b(?!-)", command, re.M)
+if commit and re.search(START + r"git\b[^\n;&|]*\badd\b", unquoted[:commit.start()], re.M):
+    reasons.append("`git add` и `git commit` в одной команде: хук проверяет индекс до запуска команды, и добавленные файлы "
+                   "уходят без проверки. Индексируй отдельной командой, коммить следующей")
 if commit:
     repo = commit_directory(command[:commit.end()], data.get("cwd") or ".")
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
