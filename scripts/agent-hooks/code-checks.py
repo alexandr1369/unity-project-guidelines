@@ -241,7 +241,7 @@ def inline_member_condition(lines, added):
             yield index + 1, "условие из полей и свойств класса: вынеси в приватное свойство-вопрос (CanShowDialogue, CanDeal)"
 
 
-PROCESS_MARKER = re.compile(r"(ing|Processing|Required|Uninitialized)$")
+PROCESS_MARKER = re.compile(r"(ing|Processing)$")
 CODE_EXCLUDES = ("/Generated/", "/Tests/", "/Plugins/")
 
 
@@ -263,7 +263,7 @@ def code_feature(path):
 
 def noneof_problems(code, changed):
     # OPTIONAL_ENTITAS.md, white-list и black-list: NoneOf — по маркеру «уже сделано», который ставят и исключают системы
-    # одной фичи, или по идущему процессу (…ing, …Processing, …Required, …Uninitialized). Маркер, который исключают
+    # одной фичи, или по идущему процессу (…ing, …Processing). Маркер, который исключают
     # в фиче, где его не ставят, — фильтр «кто в выборке» (выход из игры): только положительным <Субъект>Active в AllOf.
     # View ставит фабрика вида, у Destructed отдельное правило.
     excluders = {}
@@ -284,7 +284,7 @@ def noneof_problems(code, changed):
                     features = {code_feature(other) for other, text in code.items() if setter.search(text)}
                     verdicts[component] = all(code_feature(other) in features for other in excluders[component])
                 if not verdicts[component]:
-                    yield path, start, f"NoneOf({component}) — маркер исключают и вне фичи, где его ставят: это фильтр «кто в выборке»; сделай положительное состояние <Субъект>Active и возьми его в AllOf"
+                    yield path, start, f"NoneOf({component}) — маркер исключают и вне фичи, где его ставят: это фильтр «кто в выборке»: выход из игры — положительным <Субъект>Active в AllOf, «ещё не» и правило игры — проверкой в теле"
 
 
 def noneof_marker(cwd):
