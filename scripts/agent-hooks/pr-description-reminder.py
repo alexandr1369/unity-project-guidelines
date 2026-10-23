@@ -102,6 +102,36 @@ def new_components(cwd):
     return components
 
 
+def merged_branches(cwd):
+    # GIT_WORKFLOW.md, «После merge»: влитые task-ветки удаляются, а не копятся. Ветки чужих worktree не трогаем.
+    main = run(["git", "rev-parse", "-q", "--verify", "origin/main"], cwd).stdout.strip()
+    if not main:
+        return [], []
+    busy = {line.split("refs/heads/", 1)[1] for line in run(["git", "worktree", "list", "--porcelain"], cwd).stdout.splitlines()
+            if line.startswith("branch refs/heads/")}
+    local = []
+    for line in run(["git", "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], cwd).stdout.splitlines():
+        name, oid = line.split()
+        if name == "main" or name in busy or oid == main:
+            continue
+        if subprocess.run(["git", "merge-base", "--is-ancestor", oid, main], cwd=cwd).returncode == 0:
+            local.append(name)
+    remote = [name.strip() for name in run(["git", "branch", "-r", "--merged", main], cwd).stdout.splitlines()
+              if name.strip() not in ("origin/main",) and "->" not in name]
+    return local, remote
+
+
+def merged_branches_note(cwd):
+    local, remote = merged_branches(cwd)
+    notes = []
+    if local:
+        notes.append("Влитые локальные ветки — удали `git branch -d`: " + ", ".join(local) + ".")
+    if remote:
+        notes.append("Влитые ветки на сервере — удаление `git push origin --delete` только со словом владельца, спроси: "
+                     + ", ".join(remote) + ".")
+    return " ".join(notes)
+
+
 def workflow_rules():
     workflow = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "skills", "unity-project-guidelines", "GIT_WORKFLOW.md")
     rules = []
@@ -129,12 +159,20 @@ is_push = re.search(START + r"git (?:-C \S+ )?push\b", command, re.M)
 is_pr_create = re.search(START + r"gh pr create\b", command, re.M)
 is_commit = re.search(START + r"git (?:-C \S+ )?commit\b(?!-)", command, re.M)
 is_merge = re.search(START + r"gh pr merge\b", command, re.M)
+is_sync = re.search(START + r"git (?:-C \S+ )?(?:fetch|pull)\b", command, re.M)
 if is_merge and not is_push and not is_pr_create and not is_commit:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext":
         "PR влит на сервере. До ответа владельцу синхронизируй (GIT_WORKFLOW.md, «После merge»): локальный main — "
         "`git fetch origin main:main` или `git checkout main && git pull --ff-only`; влитую task-ветку удали, проверив "
         "`git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout пересобери csproj."}},
         ensure_ascii=False))
+    sys.exit(0)
+if is_sync and not is_push and not is_pr_create and not is_commit:
+    sync_target = re.search(START + r"(?:cd|git -C) (\S+)", command, re.M)
+    sync_cwd = os.path.expanduser(sync_target.group(1).strip("'\"")) if sync_target else data.get("cwd") or os.getcwd()
+    note = merged_branches_note(sync_cwd)
+    if note:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}, ensure_ascii=False))
     sys.exit(0)
 if not is_push and not is_pr_create and not is_commit:
     sys.exit(0)
