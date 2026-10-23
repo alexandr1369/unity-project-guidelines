@@ -245,8 +245,8 @@ PROCESS_MARKER = re.compile(r"(ing|Processing)$")
 CODE_EXCLUDES = ("/Generated/", "/Tests/", "/Plugins/")
 
 
-def noneof_clauses(text):
-    for match in re.finditer(r"\.NoneOf\(", text):
+def matcher_clauses(text, matcher):
+    for match in re.finditer(rf"\.{matcher}\(", text):
         depth, close = 0, match.end() - 1
         while close < len(text):
             depth += {"(": 1, ")": -1}.get(text[close], 0)
@@ -256,6 +256,10 @@ def noneof_clauses(text):
         yield text.count("\n", 0, match.start()) + 1, text.count("\n", 0, close) + 1, re.findall(r"\w+Matcher\.(\w+)", text[match.start():close + 1])
 
 
+def noneof_clauses(text):
+    return matcher_clauses(text, "NoneOf")
+
+
 def code_feature(path):
     folder = os.path.dirname(path)
     return os.path.dirname(folder) if os.path.basename(folder) == "Systems" else folder
@@ -263,14 +267,18 @@ def code_feature(path):
 
 def noneof_problems(code, changed):
     # OPTIONAL_ENTITAS.md, white-list и black-list: NoneOf — по маркеру «уже сделано», который ставят и исключают системы
-    # одной фичи, или по идущему процессу (…ing, …Processing). Маркер, который исключают
-    # в фиче, где его не ставят, — фильтр «кто в выборке» (выход из игры): только положительным <Субъект>Active в AllOf.
+    # одной фичи, по идущему процессу (…ing, …Processing) или у близнецов одного модуля: одна система берёт AllOf(X),
+    # другая NoneOf(X), а X — вид сущности, его нигде не снимают. Маркер, который исключают в фиче, где его не ставят
+    # и где нет близнеца, — фильтр «кто в выборке» (выход из игры): только положительным <Субъект>Active в AllOf.
     # View ставит фабрика вида, у Destructed отдельное правило.
-    excluders = {}
+    excluders, includers = {}, {}
     for path, text in code.items():
         for _, _, components in noneof_clauses(text):
             for component in components:
                 excluders.setdefault(component, set()).add(path)
+        for _, _, components in matcher_clauses(text, "AllOf"):
+            for component in components:
+                includers.setdefault(component, set()).add(code_feature(path))
     verdicts = {}
     for path, added in changed.items():
         for start, end, components in noneof_clauses(code[path]):
@@ -281,10 +289,12 @@ def noneof_problems(code, changed):
                     continue
                 if component not in verdicts:
                     setter = re.compile(rf"\bis{component}\s*=\s*\w+|\.(Add|Replace){component}\(")
+                    remover = re.compile(rf"\bis{component}\s*=\s*false\b|\.Remove{component}\(")
                     features = {code_feature(other) for other, text in code.items() if setter.search(text)}
-                    verdicts[component] = all(code_feature(other) in features for other in excluders[component])
+                    twins = includers.get(component, set()) if not any(remover.search(text) for text in code.values()) else set()
+                    verdicts[component] = all(code_feature(other) in features | twins for other in excluders[component])
                 if not verdicts[component]:
-                    yield path, start, f"NoneOf({component}) — маркер исключают и вне фичи, где его ставят: это фильтр «кто в выборке»: выход из игры — положительным <Субъект>Active в AllOf, «ещё не» и правило игры — проверкой в теле"
+                    yield path, start, f"NoneOf({component}) — маркер исключают и вне фичи, где его ставят, а близнеца с AllOf в этом модуле нет: это фильтр «кто в выборке»: выход из игры — положительным <Субъект>Active в AllOf, «ещё не» и правило игры — проверкой в теле"
 
 
 def noneof_marker(cwd):
