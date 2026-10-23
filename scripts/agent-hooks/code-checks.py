@@ -97,6 +97,13 @@ def component_name(lines, added):
             yield number, f"в имени компонента {match.group(1)} запрещено {word.group(0)}: <Факт>Required, <Verb><Object>Request, <Domain>Processing или прилагательное состояния"
 
 
+def component_value_initializer(lines, added):
+    # OPTIONAL_ENTITAS.md, «Канон именования»: поле Value компонента без инициализатора — значение приходит через Add/Replace.
+    for number in sorted(added):
+        if number <= len(lines) and re.search(r"I\w*Component\s*\{.*\bValue\s*=", lines[number - 1]):
+            yield number, "у поля Value компонента инициализатор: убери, значение приходит через Add/Replace"
+
+
 def wrapped_return(lines, added):
     # CODE_STYLE.md, «Методы»: два условия переносят, только когда строка не влезает из-за длинного обращения,
     # и тогда обращение сначала уходит в локальную переменную. return и expression-bodied метод с двумя
@@ -339,7 +346,7 @@ def system_direct_save(cwd):
 
 
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
-          single_return_getter, awake_subscription, inline_member_condition, inserted_in_list)
+          single_return_getter, awake_subscription, inline_member_condition, inserted_in_list, component_value_initializer)
 PATH_CHECKS = (refresh_method_name,)
 
 
