@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # Хук Claude Code и Codex (PreToolUse): не даёт агенту коммитить с глаголом git-действия в сообщении
-# («Закоммитил», «Запушил»), индексировать всё подряд (`git commit -a`, `git add -A`) и коммитить код, который не проходит
-# механические проверки правил из code-checks.py. Правила — GIT_WORKFLOW.md и AI_COLLABORATION_GUIDELINES.md.
+# («Закоммитил», «Запушил»), индексировать всё подряд (`git commit -a`, `git add -A`), коммитить код, который не проходит
+# механические проверки правил из code-checks.py, и вливать PR, на ветке которого стоят открытые дочерние PR.
+# Правила — GIT_WORKFLOW.md и AI_COLLABORATION_GUIDELINES.md.
 import importlib
 import json
 import os
 import re
+import subprocess
 import sys
 
 
@@ -55,6 +57,20 @@ if commit:
     found = code_checks.violations(repo) if os.path.isdir(repo) else []
     if found:
         reasons.append("код в индексе нарушает правила _guidelines:\n" + "\n".join(found[:15]))
+
+merge = re.search(START + r"gh pr merge\s+(\d+)", command, re.M)
+if merge:
+    # GIT_WORKFLOW.md, стек PR: base дочернего переставляют до merge родителя, после merge поздно.
+    repo = commit_directory(command[:merge.end()], data.get("cwd") or ".")
+    gh = lambda *args: subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True, timeout=4).stdout.strip()
+    try:
+        head = gh("pr", "view", merge.group(1), "--json", "headRefName", "-q", ".headRefName")
+        children = gh("pr", "list", "--state", "open", "--base", head, "--json", "number", "-q", ".[].number").split() if head else []
+    except (OSError, subprocess.TimeoutExpired):
+        children = []
+    if children:
+        reasons.append(f"на ветке PR #{merge.group(1)} стоят открытые PR {', '.join('#' + child for child in children)}: до merge "
+                       f"переставь их base на ветку, куда вливается родитель (`gh pr edit <номер> --base main`), после merge поздно")
 
 if reasons:
     print(json.dumps({"hookSpecificOutput": {

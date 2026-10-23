@@ -4,6 +4,7 @@
 # После git commit перечисляет новые типы и публичные поля и свойства коммита и просит назвать, откуда взято каждое
 # слово (CODE_STYLE.md).
 # Напоминает снова, пока описание не обновлено или сверка не отмечена: pr-description-reminder.py --checked <номер PR>...
+# После gh pr merge напоминает синхронизацию из GIT_WORKFLOW.md, «После merge».
 import json
 import os
 import re
@@ -127,6 +128,14 @@ START = r"(?:^|[;&|(]\s*)"
 is_push = re.search(START + r"git (?:-C \S+ )?push\b", command, re.M)
 is_pr_create = re.search(START + r"gh pr create\b", command, re.M)
 is_commit = re.search(START + r"git (?:-C \S+ )?commit\b(?!-)", command, re.M)
+is_merge = re.search(START + r"gh pr merge\b", command, re.M)
+if is_merge and not is_push and not is_pr_create and not is_commit:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext":
+        "PR влит на сервере. До ответа владельцу синхронизируй (GIT_WORKFLOW.md, «После merge»): локальный main — "
+        "`git fetch origin main:main` или `git checkout main && git pull --ff-only`; влитую task-ветку удали, проверив "
+        "`git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout пересобери csproj."}},
+        ensure_ascii=False))
+    sys.exit(0)
 if not is_push and not is_pr_create and not is_commit:
     sys.exit(0)
 
