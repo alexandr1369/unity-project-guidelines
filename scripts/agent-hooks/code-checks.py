@@ -146,6 +146,28 @@ def multiline_expression_method(lines, added):
             yield number, "метод через => занимает несколько строк: перепиши телом в фигурных скобках"
 
 
+def expression_constructor(lines, added):
+    # CODE_STYLE.md, «Форматирование»: конструктор всегда пишется телом в фигурных скобках, даже из одной строки.
+    names = set(re.findall(r"\b(?:class|struct)\s+(\w+)", "\n".join(lines)))
+    for number in sorted(added):
+        match = re.match(r"\s*(?:public|protected|private|internal)\s+(\w+)\s*\(", lines[number - 1]) if number <= len(lines) else None
+        if not match or match.group(1) not in names:
+            continue
+        header = next((line.strip() for line in lines[number - 1:number + 5] if re.search(r"(=>|\{|;)$", line.strip())), "")
+        if header.endswith("=>") or re.search(r"\)\s*=>\s*\S", header):
+            yield number, "конструктор через =>: пиши телом в фигурных скобках"
+
+
+def inserted_in_list(lines, added):
+    # CODE_STYLE.md, «Порядок объявления»: новая привязка в инсталлере дописывается в конец своего метода. Поля,
+    # константы и matcher-ы хук не проверяет: там соседство по смыслу даёт ложные срабатывания.
+    for number in sorted(added):
+        if number < 2 or number >= len(lines) or number - 1 in added or number + 1 in added:
+            continue
+        if all(lines[index].strip().startswith("Container.Bind") for index in (number - 2, number - 1, number)):
+            yield number, "привязка вставлена в середину списка: допиши её в конец метода"
+
+
 def request_before_save(lines, added):
     # CODE_STYLE.md, порядок в системе: запрос на сохранение фиксирует действие самой системы и стоит сразу за ним;
     # запрос, который запускает следующее действие в другой системе (рестарт уровня, метла), идёт после сохранения.
@@ -329,7 +351,7 @@ def system_direct_save(cwd):
 
 
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
-          single_return_getter, awake_subscription, inline_member_condition)
+          single_return_getter, awake_subscription, inline_member_condition, expression_constructor, inserted_in_list)
 PATH_CHECKS = (refresh_method_name,)
 
 
