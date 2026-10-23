@@ -313,7 +313,7 @@ def noneof_marker(cwd):
 
 def system_direct_save(cwd):
     # OPTIONAL_ENTITAS.md, «Реквесты, очистка и финализаторы»: в проекте с запросом isSaveProgressRequest система
-    # сохраняет им; сервис зовут только системы самого сохранения и система, которая после сейва подтверждает покупку.
+    # сохраняет им; сервис зовут только системы самого сохранения.
     if not run(["git", "grep", "-l", "isSaveProgressRequest = true", "--", "*.cs"], cwd).strip():
         return []
     found = []
@@ -322,8 +322,6 @@ def system_direct_save(cwd):
         if not name.endswith("System.cs") or "SaveProgress" in name or "/Tests/" in path:
             continue
         lines = run(["git", "show", f":{path}"], cwd).split("\n")
-        if any(re.search(r"\.Confirm\w*\(", line) for line in lines):
-            continue
         for number in sorted(added_lines(cwd, path)):
             if number <= len(lines) and re.search(r"\.SaveProgress\(\)", lines[number - 1]):
                 found.append(f"{path}:{number}: система сохраняет напрямую: ставь CreateEntity.Empty().isSaveProgressRequest = true")
