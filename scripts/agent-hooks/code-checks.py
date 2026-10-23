@@ -311,6 +311,25 @@ def noneof_marker(cwd):
     return [f"{path}:{number}: {message}" for path, number, message in noneof_problems(code, changed)]
 
 
+def system_direct_save(cwd):
+    # OPTIONAL_ENTITAS.md, «Реквесты, очистка и финализаторы»: в проекте с запросом isSaveProgressRequest система
+    # сохраняет им; сервис зовут только системы самого сохранения и система, которая после сейва подтверждает покупку.
+    if not run(["git", "grep", "-l", "isSaveProgressRequest = true", "--", "*.cs"], cwd).strip():
+        return []
+    found = []
+    for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
+        name = os.path.basename(path)
+        if not name.endswith("System.cs") or "SaveProgress" in name or "/Tests/" in path:
+            continue
+        lines = run(["git", "show", f":{path}"], cwd).split("\n")
+        if any(re.search(r"\.Confirm\w*\(", line) for line in lines):
+            continue
+        for number in sorted(added_lines(cwd, path)):
+            if number <= len(lines) and re.search(r"\.SaveProgress\(\)", lines[number - 1]):
+                found.append(f"{path}:{number}: система сохраняет напрямую: ставь CreateEntity.Empty().isSaveProgressRequest = true")
+    return found
+
+
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
           single_return_getter, awake_subscription, inline_member_condition)
 PATH_CHECKS = (refresh_method_name,)
@@ -429,7 +448,7 @@ def violations(cwd):
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added))
         for check in PATH_CHECKS:
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added, path))
-    return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd)
+    return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd)
 
 
 if __name__ == "__main__":
