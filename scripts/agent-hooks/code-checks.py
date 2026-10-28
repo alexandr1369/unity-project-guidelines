@@ -199,16 +199,25 @@ def single_return_getter(lines, added):
             yield index + 1, "свойство из одного выражения: пиши через =>, условие можно перенести по строкам"
 
 
-def awake_subscription(lines, added):
-    # CODE_STYLE.md, «Паттерны Unity»: подписки MonoBehaviour делаются в Start (или Initialize из Start) и снимаются
-    # в OnDestroy; Awake — только подготовка, без которой объект нельзя использовать сразу после Instantiate.
+def awake_method(lines, added):
+    # CODE_STYLE.md, «Паттерны Unity»: Awake не пишем. Подписки — в Start, снятие — в OnDestroy; подготовку, которая
+    # нужна до первого вызова сразу после создания, делает Initialize, который зовёт фабрика.
+    for number in sorted(added):
+        if number <= len(lines) and re.match(r"\s*(private|protected)?\s*(override\s+)?void Awake\(\)", lines[number - 1]):
+            yield number, "Awake: подписки — в Start, подготовку до первого вызова делает Initialize из фабрики"
+
+
+def serialized_property_order(lines, added):
+    # CODE_STYLE.md, «Порядок членов класса»: блок [field: SerializeField] — первый в секции свойств, выше обычных
+    # свойств, в том числе вычисляемых private.
+    property_seen = False
     for index, line in enumerate(lines):
-        if not re.match(r"\s*(private|protected)?\s*void Awake\(\)", line):
-            continue
-        end = index + 2 if line.rstrip().endswith("=>") else block_body_end(lines, index + 1)
-        body = lines[index:end]
-        if any(re.search(r"\+=|AddListener\(", text) for text in body) and added.intersection(range(index + 1, end + 1)):
-            yield index + 1, "подписка в Awake: подписывайся в Start, снимай в OnDestroy"
+        text = line.strip()
+        if text.startswith("[field: SerializeField]"):
+            if property_seen and index + 1 in added:
+                yield index + 1, "сериализуемое свойство ниже обычного: блок [field: SerializeField] идёт первым"
+        elif re.match(r"(public|private|protected|internal)\s+(static\s+|override\s+|virtual\s+|abstract\s+)*[\w<>\[\],.?]+\s+[A-Z]\w*\s*(=>|\{\s*get)", text) and "(" not in text.split("=>")[0]:
+            property_seen = True
 
 
 def refresh_method_name(lines, added, path=""):
@@ -219,6 +228,35 @@ def refresh_method_name(lines, added, path=""):
     for number in sorted(added):
         if number <= len(lines) and re.search(r"\b(void|bool|int|float|string|Task)\s+Refresh\w*\(", lines[number - 1]):
             yield number, "метод с Refresh вне системы: называй его Update… по обновляемой части"
+
+
+def unity_time(lines, added, path=""):
+    # ARCHITECTURE_GUIDELINES.md, «Границы зависимостей»: время игры берётся у ITimeProvider, а не у UnityEngine.Time.
+    if "/Common/Time/" in path or "/Editor/" in path or "/Tests/" in path:
+        return
+    for number in sorted(added):
+        if number <= len(lines) and re.search(r"(?:(?<![\w.])|UnityEngine\.)Time\.(time|deltaTime|unscaledDeltaTime|unscaledTime|realtimeSinceStartup|timeSinceLevelLoad|fixedDeltaTime|timeScale|frameCount)\b", lines[number - 1]):
+            yield number, "UnityEngine.Time напрямую: время бери у ITimeProvider"
+
+
+def self_update(lines, added, path=""):
+    # ARCHITECTURE_GUIDELINES.md, «Порядок выполнения»: объект игры не подписывает себя на кадр своим Update.
+    # Покадровую работу вида зовёт владелец: Refresh-система каждый кадр передаёт состояние через UI-сервис.
+    if "/Gameplay/" not in path and "/Meta/" not in path:
+        return
+    for number in sorted(added):
+        if number <= len(lines) and re.match(r"\s*(private|protected)?\s*void (Update|LateUpdate|FixedUpdate)\(\)", lines[number - 1]):
+            yield number, "свой Update у объекта: кадр ему передаёт владелец (Refresh-система через UI-сервис)"
+
+
+def animator_lifecycle(lines, added, path=""):
+    # ARCHITECTURE_GUIDELINES.md, «Границы зависимостей»: у <Owner>Animator нет своих Unity-колбэков; Initialize и
+    # CleanUp ему зовёт владелец из своих Start/OnDestroy или фабрика.
+    if not any(re.search(r"\bclass \w+Animator\s*:\s*MonoBehaviour\b", line) for line in lines):
+        return
+    for number in sorted(added):
+        if number <= len(lines) and re.match(r"\s*(private|protected)?\s*void (Awake|OnEnable|Start|Update|LateUpdate|OnDisable|OnDestroy)\(\)", lines[number - 1]):
+            yield number, "Unity-колбэк у аниматора: Initialize/CleanUp ему зовёт владелец"
 
 
 def condition_operands(condition):
@@ -346,8 +384,9 @@ def system_direct_save(cwd):
 
 
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
-          single_return_getter, awake_subscription, inline_member_condition, inserted_in_list, component_value_initializer)
-PATH_CHECKS = (refresh_method_name,)
+          single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
+          serialized_property_order)
+PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle)
 
 
 VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
