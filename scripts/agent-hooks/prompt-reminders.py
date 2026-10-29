@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # Хук Claude Code и Codex (UserPromptSubmit): по словам владельца кладёт агенту нужный раздел правил
 # из AI_COLLABORATION_GUIDELINES.md — правило понятных вопросов на просьбу дать вопросы к ГД или к себе,
-# список самопроверки на «перепроверь».
+# список самопроверки на «перепроверь». Туда же кладёт просроченный архитектурный аудит:
+# счётчик читает audit_due.py, память ассистента его не ведёт.
 import json
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import audit_due
 
 QUESTIONS_SECTION = "## Вопросы геймдизайну и владельцу"
 SELF_CHECK_SECTION = "## Самопроверка перед отчётом"
@@ -42,6 +46,10 @@ def section(title):
 data = json.load(sys.stdin)
 prompt = data.get("prompt") or ""
 reminders = []
+session = data.get("session_id") or data.get("sessionId") or ""
+audit = audit_due.context(data.get("cwd") or os.getcwd(), session, refresh=False, repeat=False)
+if audit:
+    reminders.append(audit)
 if asks_questions(prompt):
     reminders.append("Владелец просит вопросы. Каждый вопрос до отдачи проверь по правилам ниже глазами ГД, который видит его впервые.\n\n"
                      + section(QUESTIONS_SECTION))

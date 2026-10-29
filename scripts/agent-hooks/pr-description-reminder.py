@@ -12,6 +12,9 @@ import subprocess
 import sys
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import audit_due
+
 QUERY = """query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:30){nodes{
 number title body createdAt lastEditedAt baseRefName headRefName}}}}"""
 
@@ -144,6 +147,15 @@ def workflow_rules():
     return "\n".join(rules)
 
 
+def with_audit(cwd, text, session):
+    extra = audit_due.context(cwd, session, refresh=True, repeat=True)
+    if not extra:
+        return text
+    if not text:
+        return extra
+    return text + "\n\n" + extra
+
+
 if len(sys.argv) > 2 and sys.argv[1] == "--checked":
     mark_checked(sys.argv[2:], os.getcwd())
     sys.exit(0)
@@ -161,16 +173,20 @@ is_commit = re.search(START + r"git (?:-C \S+ )?commit\b(?!-)", command, re.M)
 is_merge = re.search(START + r"gh pr merge\b", command, re.M)
 is_sync = re.search(START + r"git (?:-C \S+ )?(?:fetch|pull)\b", command, re.M)
 if is_merge and not is_push and not is_pr_create and not is_commit:
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext":
+    merge_cwd = data.get("cwd") or os.getcwd()
+    merge_text = with_audit(
+        merge_cwd,
         "PR влит на сервере. До ответа владельцу синхронизируй (GIT_WORKFLOW.md, «После merge»): локальный main — "
         "`git fetch origin main:main` или `git checkout main && git pull --ff-only`; влитую task-ветку удали, проверив "
-        "`git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout пересобери csproj."}},
-        ensure_ascii=False))
+        "`git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout пересобери csproj.",
+        data.get("session_id") or data.get("sessionId") or "")
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": merge_text}},
+                     ensure_ascii=False))
     sys.exit(0)
 if is_sync and not is_push and not is_pr_create and not is_commit:
     sync_target = re.search(START + r"(?:cd|git -C) (\S+)", command, re.M)
     sync_cwd = os.path.expanduser(sync_target.group(1).strip("'\"")) if sync_target else data.get("cwd") or os.getcwd()
-    note = merged_branches_note(sync_cwd)
+    note = with_audit(sync_cwd, merged_branches_note(sync_cwd), data.get("session_id") or data.get("sessionId") or "")
     if note:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}, ensure_ascii=False))
     sys.exit(0)
