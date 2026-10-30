@@ -24,7 +24,11 @@ codex plugin add unity-project-guidelines@unity-project-guidelines
 ```
 
 В Codex после установки хуки разрешаются один раз: Settings → Hooks → Unity Project
-Guidelines → Trust all (в консоли — команда `/hooks`). Навык и хуки работают с новой сессии.
+Guidelines → Trust all (в консоли — команда `/hooks`). Новая сессия подхватывает навык и хуки.
+
+После установки или переноса проверь фактический вызов хуков по разделу «Уровни контроля»
+в [AI_COLLABORATION_GUIDELINES.md](skills/unity-project-guidelines/AI_COLLABORATION_GUIDELINES.md).
+Обнаруженный навык и доверенный хук сами по себе не подтверждают автоматическую защиту.
 
 ## Обновление
 
