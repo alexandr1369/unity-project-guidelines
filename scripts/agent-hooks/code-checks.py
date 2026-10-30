@@ -383,6 +383,27 @@ def system_direct_save(cwd):
     return found
 
 
+def duplicate_save_stage(cwd):
+    # Общая фаза сохранения одна; тестовая композиция не считается регистрацией runtime.
+    paths = run(["git", "grep", "--cached", "-l", "SaveProgressOnRequestSystem", "--", "*.cs",
+                 ":!*/Tests/*", ":!*/Generated/*", ":!*/Editor/*", ":!*/Plugins/*"], cwd).splitlines()
+    registrations = []
+    for path in paths:
+        source = run(["git", "show", f":{path}"], cwd)
+        source = re.sub(r"//[^\n]*|/\*[\s\S]*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group()), source)
+        for match in re.finditer(r"\b(?:Create\s*<\s*SaveProgressOnRequestSystem\s*>\s*|new\s+SaveProgressOnRequestSystem\s*)\(", source):
+            start = source.count("\n", 0, match.start()) + 1
+            end = source.count("\n", 0, match.end()) + 1
+            registrations.append((path, start, end))
+    if len(registrations) < 2:
+        return []
+    found = []
+    for path, start, end in registrations:
+        if added_lines(cwd, path).intersection(range(start, end + 1)):
+            found.append(f"{path}:{start}: повторная общая фаза сохранения: оставь единственный SaveProgressOnRequestSystem, зависимые действия ставь после него")
+    return found
+
+
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
           serialized_property_order)
@@ -502,11 +523,53 @@ def violations(cwd):
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added))
         for check in PATH_CHECKS:
             found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added, path))
-    return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd)
+    return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd)
+
+
+def self_test():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as cwd:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+        def stage(path, source):
+            file = Path(cwd, path)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(source)
+            git("add", "--", path)
+
+        owner = "Assets/Code/GameplayFeature.cs"
+        shop = "Assets/Code/ShopFeature.cs"
+        registration = "Add(systems.Create<SaveProgressOnRequestSystem>());\n"
+        git("init", "-q")
+        stage(owner, registration)
+        git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+            "commit", "-qm", "Fixture")
+        assert not duplicate_save_stage(cwd)
+        stage(shop, registration)
+        assert len(duplicate_save_stage(cwd)) == 1
+        Path(cwd, shop).write_text("")
+        assert len(duplicate_save_stage(cwd)) == 1, "Check the index, not the working copy"
+        stage(shop, "")
+        stage("Assets/Code/Tests/EditMode/ShopFeatureTests.cs", registration)
+        stage("Assets/Code/Editor/Example.cs", registration)
+        stage("Assets/Code/Example.cs", "// " + registration + "/* " + registration + "*/\n")
+        assert not duplicate_save_stage(cwd)
+        stage(shop, "Add(systems.Create<\n    SaveProgressOnRequestSystem\n>());\n")
+        assert len(duplicate_save_stage(cwd)) == 1
+        stage(shop, "Add(new SaveProgressOnRequestSystem(game, saveLoad));\n")
+        assert len(duplicate_save_stage(cwd)) == 1
+        git("rm", "--", owner)
+        assert not duplicate_save_stage(cwd), "Moving the single owner is allowed"
+    print("duplicate-save-stage self-test ok")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2 and sys.argv[1] == "--approve-word":
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        self_test()
+    elif len(sys.argv) > 2 and sys.argv[1] == "--approve-word":
         approve_words(sys.argv[2:], os.getcwd())
     else:
         print("\n".join(violations(sys.argv[1] if len(sys.argv) > 1 else ".")))
