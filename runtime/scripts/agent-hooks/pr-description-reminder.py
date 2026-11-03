@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import audit_due
 from command_directory import GIT, START, command_directory
 from guidelines_path import guidelines_path
+from tracker_reminder import tracker_reminder
 
 QUERY = """query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:30){nodes{
 number title body createdAt lastEditedAt baseRefName headRefName}}}}"""
@@ -201,16 +202,18 @@ if is_merge and not is_push and not is_pr_create and not is_commit:
     merge_cwd = command_directory(command[:is_merge.end()], cwd)
     merge_text = with_audit(
         merge_cwd,
-        "PR влит на сервере. До ответа владельцу синхронизируй (GIT_WORKFLOW.md, «После merge»): локальный main — "
+        "Команда merge завершилась успешно; проверь фактическое слияние PR. Если статус PR — MERGED, до ответа владельцу синхронизируй (GIT_WORKFLOW.md, «После merge»): локальный main — "
         "сначала `git checkout main`, затем `git pull --ff-only` и `git fetch --prune`; влитую task-ветку удали, проверив "
-        "`git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout пересобери csproj.",
+        "`git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout пересобери csproj.\n\n"
+        + tracker_reminder(),
         data.get("session_id") or data.get("sessionId") or "")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": merge_text}},
                      ensure_ascii=False))
     sys.exit(0)
 if is_sync and not is_push and not is_pr_create and not is_commit:
     sync_cwd = command_directory(command[:is_sync.end()], cwd)
-    note = with_audit(sync_cwd, merged_branches_note(sync_cwd), data.get("session_id") or data.get("sessionId") or "")
+    notes = [merged_branches_note(sync_cwd), tracker_reminder()]
+    note = with_audit(sync_cwd, "\n\n".join(note for note in notes if note), data.get("session_id") or data.get("sessionId") or "")
     if note:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}, ensure_ascii=False))
     sys.exit(0)

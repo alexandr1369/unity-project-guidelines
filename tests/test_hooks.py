@@ -170,6 +170,64 @@ class HookTests(unittest.TestCase):
                 self.assertEqual(self.hook(command, script="pr-description-reminder.py",
                                            tool_response={"exit_code": 1}), "")
 
+    def test_merge_and_sync_inject_card_acceptance_check_without_extra_network(self):
+        binaries = self.root / "bin"
+        binaries.mkdir()
+        marker = self.root / "gh-called"
+        gh = binaries / "gh"
+        gh.write_text("#!/bin/sh\ntouch " + shlex.quote(str(marker)) + "\nexit 1\n")
+        gh.chmod(0o755)
+        env = os.environ | {"PATH": str(binaries) + os.pathsep + os.environ["PATH"]}
+        commands = ["gh pr merge 171", "git fetch --prune", "git pull --ff-only",
+                    f"git -C {shlex.quote(str(self.repo))} pull --ff-only"]
+        for command in commands:
+            with self.subTest(command=command):
+                output = json.loads(self.hook(command, script="pr-description-reminder.py", env=env,
+                                             cwd=self.other, workdir=self.repo,
+                                             tool_response={"exit_code": 0}))["hookSpecificOutput"]
+                context = output["additionalContext"]
+                self.assertEqual(output["hookEventName"], "PostToolUse")
+                self.assertIn("## Карточки трекера", context)
+                self.assertIn("ревью владельца", context)
+                self.assertIn("все относящиеся к ней МР", context)
+                self.assertIn("CLOSED без MERGED", context)
+                self.assertIn("Если карточек к переводу нет", context)
+                self.assertIn("владелец сделал сам в GitHub", context)
+        self.assertFalse(marker.exists())
+
+    def test_failed_or_pending_merge_and_sync_do_not_claim_completion(self):
+        for command in ("gh pr merge 171", "git fetch --prune", "git pull --ff-only"):
+            for response in ({"exit_code": 1}, {"exit_code": None, "session_id": 1}, None):
+                with self.subTest(command=command, response=response):
+                    self.assertEqual(self.hook(command, script="pr-description-reminder.py",
+                                               tool_response=response), "")
+
+    def test_scheduling_auto_merge_does_not_claim_the_pr_is_merged(self):
+        context = json.loads(self.hook("gh pr merge 171 --auto", script="pr-description-reminder.py",
+                                      tool_response={"exit_code": 0}))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("проверь фактическое слияние PR", context)
+        self.assertIn("Если статус PR — MERGED", context)
+        self.assertNotIn("PR влит на сервере", context)
+
+    def test_owner_reported_pr_completion_injects_card_acceptance_check(self):
+        prompts = ["Смержил 174, подтяни плиз", "Влил MR #172", "171 закрыл, синхронизируй",
+                   "PR 173 merged", "Закрыл PR 171 без merge"]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                context = json.loads(self.hook("", script="prompt-reminders.py", prompt=prompt))["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("## Карточки трекера", context)
+                self.assertIn("CLOSED без MERGED", context)
+                self.assertIn("все относящиеся к ней МР", context)
+                self.assertNotIn("PR влит на сервере", context)
+
+    def test_future_or_negated_merge_reports_do_not_trigger_card_check(self):
+        prompts = ["Пока не смержил 171", "PR 171 is not yet merged", "Смержить 171 после ревью",
+                   "PR 171 готов к ревью", "Все проверки PR 171 зелёные", "Закрыл приложение"]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                output = self.hook("", script="prompt-reminders.py", prompt=prompt)
+                self.assertNotIn("Карточки трекера", output)
+
     def test_commit_and_push_require_separate_calls(self):
         for prefix in ("git ", f"git -C {shlex.quote(str(self.repo))} "):
             with self.subTest(prefix=prefix):
