@@ -43,11 +43,15 @@ class HookTests(unittest.TestCase):
         (self.repo / FILE).write_text(source)
         self.git("add", "--", FILE)
 
-    def hook(self, command, *, script="commit-guard.py", key="cmd", cwd=None, workdir=None, env=None):
+    def hook(self, command, *, script="commit-guard.py", key="cmd", cwd=None, workdir=None, env=None, prompt=None, tool_response=None):
         tool_input = {key: command}
         if workdir is not None:
             tool_input["workdir"] = str(workdir)
         event = {"cwd": str(cwd or self.repo), "tool_name": "Bash", "tool_input": tool_input}
+        if prompt is not None:
+            event["prompt"] = prompt
+        if tool_response is not None:
+            event["tool_response"] = tool_response
         runner = "bash" if script.endswith(".sh") else sys.executable
         result = subprocess.run([runner, str(SCRIPTS / script)], input=json.dumps(event),
                                 cwd=self.root, env=env, capture_output=True, text=True, timeout=15)
@@ -60,6 +64,12 @@ class HookTests(unittest.TestCase):
         self.assertEqual(decision["hookEventName"], "PreToolUse")
         self.assertEqual(decision["permissionDecision"], "deny")
         self.assertIn(reason, decision["permissionDecisionReason"])
+
+    def commit_allowed(self, output):
+        context = json.loads(output)["hookSpecificOutput"]
+        self.assertEqual(context["hookEventName"], "PreToolUse")
+        self.assertNotIn("permissionDecision", context)
+        self.assertIn("Самопроверка перед отчётом", context["additionalContext"])
 
     def test_existing_code_check_regressions(self):
         result = subprocess.run([sys.executable, str(SCRIPTS / "code-checks.py"), "--self-test"],
@@ -77,6 +87,77 @@ class HookTests(unittest.TestCase):
         for command in commands:
             with self.subTest(command=command):
                 self.denied(self.hook(command), "правил")
+
+    def test_review_feedback_injects_rule_update_instructions(self):
+        prompts = ["Два момента оставил в 171 проверь в мр", "Опять ошибка, порядок методов нарушен",
+                   "Дополни правила по замечаниям, сам себя обучай", "Left two comments on PR 171"]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                output = json.loads(self.hook("", script="prompt-reminders.py", prompt=prompt))["hookSpecificOutput"]
+                self.assertEqual(output["hookEventName"], "UserPromptSubmit")
+                self.assertIn("## Выводы из замечаний владельца", output["additionalContext"])
+                self.assertIn("без отдельной просьбы", output["additionalContext"])
+                self.assertIn("Проверка нового правила", output["additionalContext"])
+
+    def test_unrelated_prompt_does_not_inject_rule_update_instructions(self):
+        self.assertEqual(self.hook("", script="prompt-reminders.py", prompt="Покажи текущий баланс гемов"), "")
+
+    def test_successful_commit_without_new_names_injects_self_check(self):
+        self.stage(VALID.replace("Initialize() { }", "Initialize() { base.Initialize(); }"))
+        self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                 "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+                 "commit", "-qm", "Уточнил фикстуру")
+        responses = [{"exit_code": 0, "output": "commit created"},
+                     json.dumps({"exit_code": 0, "output": "commit created"}),
+                     "Wall time: 0.1 seconds\nProcess exited with code 0\nFinal output:\ncommit created",
+                     {"stdout": "commit created", "stderr": "", "interrupted": False, "isImage": False}]
+        for response in responses:
+            with self.subTest(response=response):
+                output = json.loads(self.hook('git commit -m "Исправил окно"', script="pr-description-reminder.py",
+                                             cwd=self.other, workdir=self.repo, tool_response=response))["hookSpecificOutput"]
+                self.assertEqual(output["hookEventName"], "PostToolUse")
+                self.assertIn("Самопроверка перед отчётом", output["additionalContext"])
+                self.assertIn("Выводы из замечаний владельца", output["additionalContext"])
+                self.assertNotIn("Новые имена", output["additionalContext"])
+
+    def test_failed_or_unknown_commit_result_does_not_claim_success(self):
+        responses = [None, {}, {"exit_code": 1, "output": "nothing to commit"},
+                     "Process exited with code 1\nFinal output:\nnothing to commit",
+                     {"stdout": "", "stderr": "interrupted", "interrupted": True, "isImage": False}]
+        for response in responses:
+            with self.subTest(response=response):
+                self.assertEqual(self.hook('git commit -m "Исправил окно"', script="pr-description-reminder.py",
+                                           tool_response=response), "")
+
+    def test_commit_self_check_keeps_existing_name_and_component_reminders(self):
+        file = self.repo / "Assets/Code/FlightComponent.cs"
+        file.write_text("public class FlightComponent : IComponent { }\n")
+        self.git("add", "--", str(file))
+        self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                 "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+                 "commit", "-qm", "Добавил фикстуру компонента")
+        command = f'git -C {shlex.quote(str(self.repo))} commit -m "Исправил окно"'
+        output = json.loads(self.hook(command, script="pr-description-reminder.py", cwd=self.other,
+                                     tool_response={"exit_code": 0}))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Самопроверка перед отчётом", output)
+        self.assertIn("Новые имена в коммите: FlightComponent", output)
+        self.assertIn("Новые компоненты: FlightComponent", output)
+
+    def test_unrelated_post_tool_command_does_not_inject_commit_self_check(self):
+        self.assertEqual(self.hook("git status --short", script="pr-description-reminder.py",
+                                  tool_response={"exit_code": 0}), "")
+
+    def test_failed_publish_or_merge_does_not_claim_success(self):
+        for command in ("git push origin main", "gh pr create", "gh pr merge 171"):
+            with self.subTest(command=command):
+                self.assertEqual(self.hook(command, script="pr-description-reminder.py",
+                                           tool_response={"exit_code": 1}), "")
+
+    def test_commit_and_push_require_separate_calls(self):
+        for prefix in ("git ", f"git -C {shlex.quote(str(self.repo))} "):
+            with self.subTest(prefix=prefix):
+                self.denied(self.hook(prefix + 'commit -m "Исправил окно" && git push origin main'), "самопроверку")
+        self.commit_allowed(self.hook('git commit -m "Уточнил текст git push"'))
 
     def test_read_commands_and_explicit_staging_are_allowed(self):
         for command in ["git status --short", "git add -- file.cs", 'printf "git add -A"']:
@@ -96,7 +177,14 @@ class HookTests(unittest.TestCase):
         self.stage(VALID.replace("Initialize", "CleanUp"))
         for key in ("cmd", "command"):
             with self.subTest(key=key):
-                self.assertEqual(self.hook('git commit -m "Исправил окно"', key=key), "")
+                self.commit_allowed(self.hook('git commit -m "Исправил окно"', key=key))
+
+    def test_own_method_before_base_lifecycle_is_denied_until_reordered(self):
+        public_method = "    public void DisplayCompletedLevel() { }\n"
+        self.stage(VALID.replace("    protected override", public_method + "    protected override"))
+        self.denied(self.hook('git commit -m "Исправил окно"'), "блок lifecycle")
+        self.stage(VALID.replace("\n}\n", "\n" + public_method + "}\n"))
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
     def test_staged_violation_is_denied_in_both_payload_formats(self):
         self.stage(INVALID)
@@ -108,7 +196,7 @@ class HookTests(unittest.TestCase):
     def test_workdir_selects_the_actual_repository(self):
         self.stage(INVALID)
         self.denied(self.hook('git commit -m "Исправил окно"', cwd=self.other, workdir=self.repo), "OnEnable")
-        self.assertEqual(self.hook('git commit -m "Исправил окно"', cwd=self.repo, workdir=self.other), "")
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"', cwd=self.repo, workdir=self.other))
 
     def test_quoted_git_directory_and_cd_select_the_actual_repository(self):
         self.stage(INVALID)
@@ -129,7 +217,7 @@ class HookTests(unittest.TestCase):
         (self.repo / FILE).write_text(VALID)
         self.denied(self.hook('git commit -m "Исправил окно"'), "OnEnable")
         self.stage(VALID)
-        self.assertEqual(self.hook('git commit -m "Исправил окно"'), "")
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
     def test_non_lifecycle_style_violation_is_also_denied(self):
         self.stage(VALID.replace("    protected override void Initialize() { }",

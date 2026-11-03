@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Хук Claude Code и Codex (UserPromptSubmit): по словам владельца кладёт агенту нужный раздел правил
 # из AI_COLLABORATION_GUIDELINES.md — правило понятных вопросов на просьбу дать вопросы к ГД или к себе,
-# список самопроверки на «перепроверь». Туда же кладёт просроченный архитектурный аудит:
+# список самопроверки на «перепроверь» и выводы из замечаний при работе с ревью. Туда же кладёт просроченный архитектурный аудит:
 # счётчик читает audit_due.py, память ассистента его не ведёт.
 import json
 import os
@@ -13,11 +13,13 @@ import audit_due
 
 QUESTIONS_SECTION = "## Вопросы геймдизайну и владельцу"
 SELF_CHECK_SECTION = "## Самопроверка перед отчётом"
+FEEDBACK_SECTION = "## Выводы из замечаний владельца"
 QUESTION = re.compile(r"вопрос", re.I)
 GAME_DESIGN = re.compile(r"(?<!\w)(?:г\.?д|gd|гэдэ)(?!\w)|геймдиз", re.I)
 QUESTIONS = re.compile(r"вопрос(?:ы|ов|ам|ами|ах)", re.I)
 REQUEST = re.compile(r"дай|кинь|кидай|закин|отда|продублир|составь|собер|запиши|задавай|задай|остал|какие|сократи|перепиш", re.I)
 SELF_CHECK = re.compile(r"перепров|провер\w* себя|сам себя провер", re.I)
+FEEDBACK = re.compile(r"\b(?:мр|mr|pr|review|comments?)\b|ревью|замечан|коммент|кодстайл|косяк|ошибк|подсвет|костыл|правил|сам себя обуч", re.I)
 WINDOW = 70
 
 
@@ -56,6 +58,9 @@ if asks_questions(prompt):
 if SELF_CHECK.search(prompt):
     reminders.append("Владелец просит перепроверить. Пройди список ниже по итоговому диффу целиком, с первого пункта, и назови, что нашлось.\n\n"
                      + section(SELF_CHECK_SECTION))
+if FEEDBACK.search(prompt):
+    reminders.append("При обработке замечаний и объяснений владельца сам обновляй правила и проверяй их тем же заходом, что и фикс.\n\n"
+                     + section(FEEDBACK_SECTION))
 if not reminders:
     sys.exit(0)
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Хук Claude Code и Codex (PostToolUse): после любого git push и gh pr create называет открытые PR,
 # в которых есть коммиты новее последней правки описания, и кладёт агенту правила описания из GIT_WORKFLOW.md.
-# После git commit перечисляет новые типы и публичные поля и свойства коммита и просит назвать, откуда взято каждое
-# слово (CODE_STYLE.md).
+# После успешного git commit напоминает самопроверку итогового diff, перечисляет новые типы, публичные поля и свойства
+# коммита и просит назвать, откуда взято каждое слово (CODE_STYLE.md).
 # Напоминает снова, пока описание не обновлено или сверка не отмечена: pr-description-reminder.py --checked <номер PR>...
 # После gh pr merge напоминает синхронизацию из GIT_WORKFLOW.md, «После merge».
 import json
@@ -14,6 +14,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import audit_due
+from command_directory import GIT, START, command_directory
 
 QUERY = """query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:30){nodes{
 number title body createdAt lastEditedAt baseRefName headRefName}}}}"""
@@ -156,6 +157,21 @@ def with_audit(cwd, text, session):
     return text + "\n\n" + extra
 
 
+def command_succeeded(response):
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except ValueError:
+            status = re.search(r"^Process exited with code (\d+)\s*$", response, re.M)
+            return status is not None and status.group(1) == "0"
+    if not isinstance(response, dict):
+        return False
+    if "exit_code" in response:
+        return response["exit_code"] == 0
+    # Claude PostToolUse вызывается только после успеха; его Bash-ответ не содержит exit_code.
+    return response.get("interrupted") is False and "stdout" in response and "stderr" in response
+
+
 if len(sys.argv) > 2 and sys.argv[1] == "--checked":
     mark_checked(sys.argv[2:], os.getcwd())
     sys.exit(0)
@@ -166,26 +182,27 @@ command = tool_input.get("command") or tool_input.get("cmd") or ""
 if isinstance(command, list):
     command = " ".join(command)
 
-START = r"(?:^|[;&|(]\s*)"
-is_push = re.search(START + r"git (?:-C \S+ )?push\b", command, re.M)
+is_push = re.search(START + GIT + r"\s+push\b", command, re.M)
 is_pr_create = re.search(START + r"gh pr create\b", command, re.M)
-is_commit = re.search(START + r"git (?:-C \S+ )?commit\b(?!-)", command, re.M)
+is_commit = re.search(START + GIT + r"\s+commit\b(?!-)", command, re.M)
 is_merge = re.search(START + r"gh pr merge\b", command, re.M)
-is_sync = re.search(START + r"git (?:-C \S+ )?(?:fetch|pull)\b", command, re.M)
+is_sync = re.search(START + GIT + r"\s+(?:fetch|pull)\b", command, re.M)
+cwd = tool_input.get("workdir") or data.get("cwd") or os.getcwd()
+if (is_commit or is_push or is_pr_create or is_merge or is_sync) and not command_succeeded(data.get("tool_response")):
+    sys.exit(0)
 if is_merge and not is_push and not is_pr_create and not is_commit:
-    merge_cwd = data.get("cwd") or os.getcwd()
+    merge_cwd = command_directory(command[:is_merge.end()], cwd)
     merge_text = with_audit(
         merge_cwd,
         "PR влит на сервере. До ответа владельцу синхронизируй (GIT_WORKFLOW.md, «После merge»): локальный main — "
-        "`git fetch origin main:main` или `git checkout main && git pull --ff-only`; влитую task-ветку удали, проверив "
+        "сначала `git checkout main`, затем `git pull --ff-only` и `git fetch --prune`; влитую task-ветку удали, проверив "
         "`git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout пересобери csproj.",
         data.get("session_id") or data.get("sessionId") or "")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": merge_text}},
                      ensure_ascii=False))
     sys.exit(0)
 if is_sync and not is_push and not is_pr_create and not is_commit:
-    sync_target = re.search(START + r"(?:cd|git -C) (\S+)", command, re.M)
-    sync_cwd = os.path.expanduser(sync_target.group(1).strip("'\"")) if sync_target else data.get("cwd") or os.getcwd()
+    sync_cwd = command_directory(command[:is_sync.end()], cwd)
     note = with_audit(sync_cwd, merged_branches_note(sync_cwd), data.get("session_id") or data.get("sessionId") or "")
     if note:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}, ensure_ascii=False))
@@ -193,13 +210,15 @@ if is_sync and not is_push and not is_pr_create and not is_commit:
 if not is_push and not is_pr_create and not is_commit:
     sys.exit(0)
 
-target = re.search(START + r"(?:cd|git -C) (\S+)", command, re.M)
-cwd = os.path.expanduser(target.group(1).strip("'\"")) if target else data.get("cwd") or os.getcwd()
+operation = is_commit or is_push or is_pr_create
+cwd = command_directory(command[:operation.end()], cwd)
 
 if is_commit and not is_push and not is_pr_create:
     names = new_type_names(cwd)
     components = new_components(cwd)
-    messages = []
+    guidelines = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "skills", "unity-project-guidelines", "AI_COLLABORATION_GUIDELINES.md"))
+    messages = ["После успешного коммита до push и отчёта о готовности пройди итоговый diff целиком по разделам "
+                "«Самопроверка перед отчётом» и «Выводы из замечаний владельца» в " + guidelines + "."]
     if names:
         messages.append(
             "Новые имена в коммите: " + ", ".join(names) + ". Для каждого до push назови, откуда слово: так понятие уже "
@@ -211,8 +230,7 @@ if is_commit and not is_push and not is_pr_create:
             "Новые компоненты: " + ", ".join(components) + ". Для каждого до push назови существующий факт, который уже говорит то же самое: "
             "компонент, группу, состояние действия. Нашёлся — новый компонент не нужен: CoinsMoved дублировал Animating с FromSlotId/ToSlotId "
             "у принятого хода. Не нашёлся — назови владельца, кто ставит, кто читает и когда он умирает (OPTIONAL_ENTITAS.md, «Новые компоненты»).")
-    if messages:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": " ".join(messages)}}, ensure_ascii=False))
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": " ".join(messages)}}, ensure_ascii=False))
     sys.exit(0)
 
 try:

@@ -34,6 +34,9 @@ if re.search(START + GIT + r"\s+add\b[^\n;&|]*\s(?:-A|--all)\b", unquoted, re.M)
     reasons.append("`git add -A` индексирует всё подряд: добавлять файлы по путям задачи")
 
 commit = re.search(START + GIT + r"\s+commit(?![-\w])", command, re.M)
+plain_commit = re.search(START + GIT + r"\s+commit(?![-\w])", unquoted, re.M)
+if plain_commit and re.search(START + GIT + r"\s+push\b", unquoted[plain_commit.end():], re.M):
+    reasons.append("`git commit` и `git push` в одной команде: сначала заверши самопроверку итогового diff после коммита, затем отдельной командой публикуй")
 if commit and re.search(START + r"git\b[^\n;&|]*\badd\b", unquoted[:commit.start()], re.M):
     reasons.append("`git add` и `git commit` в одной команде: хук проверяет индекс до запуска команды, и добавленные файлы "
                    "уходят без проверки. Индексируй отдельной командой, коммить следующей")
@@ -65,3 +68,8 @@ if reasons:
         "permissionDecision": "deny",
         "permissionDecisionReason": "; ".join(reasons) + ". Сверься с правилом: коммиты — GIT_WORKFLOW.md, код — CODE_STYLE.md и OPTIONAL_ENTITAS.md."}},
         ensure_ascii=False))
+elif commit:
+    guidelines = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "skills", "unity-project-guidelines", "AI_COLLABORATION_GUIDELINES.md"))
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": "До публикации и отчёта о готовности сам пройди весь итоговый diff по разделам «Самопроверка перед отчётом» и «Выводы из замечаний владельца» в " + guidelines + ". Механический допуск не доказывает смысловую корректность."}}, ensure_ascii=False))

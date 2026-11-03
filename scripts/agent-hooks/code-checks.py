@@ -273,6 +273,41 @@ def dialogue_lifecycle(lines, added):
             yield number, f"{callback.group(1)} у наследника {owner.group(1)}: используй штатные Initialize/SubscribeUpdates/CleanUp базы; собственный покадровый сценарий во view не добавляй"
 
 
+def dialogue_lifecycle_order(lines, added):
+    # CODE_STYLE.md: явный lifecycle базы идёт после DI единым блоком, до собственных методов окна.
+    owner = next((match for line in lines if (match := re.match(
+        r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:\w+\.)*(DialogueBase|ScreenBase|BaseWindow)\b", line))), None)
+    if not owner:
+        return
+    indent = len(owner.group(1)) + 4
+    lifecycle_names = ("Initialize", "SubscribeUpdates", "CleanUp")
+    methods = []
+    for number, line in enumerate(lines, 1):
+        if len(line) - len(line.lstrip()) != indent:
+            continue
+        text = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
+        method = re.match(r"\s*(public|protected|internal|private)\s+([^=;{}()]+\s+)(\w+)(?:<[^>()]*>)?\s*\(", text)
+        if not method:
+            continue
+        name = method.group(3)
+        overriding = "override" in method.group(2).split()
+        if overriding and name not in lifecycle_names:
+            continue
+        role = "lifecycle" if overriding else "construct" if name == "Construct" else "method"
+        methods.append((number, name, role))
+    lifecycle = [(number, name) for number, name, role in methods if role == "lifecycle"]
+    if not lifecycle:
+        return
+    boundaries = {number for number, _ in lifecycle}
+    for number, name, role in methods:
+        wrong_place = role == "construct" and number > lifecycle[0][0] or role == "method" and number < lifecycle[-1][0]
+        if wrong_place and added.intersection(boundaries | {number}):
+            yield number, f"{name} нарушает блок lifecycle: override Initialize/SubscribeUpdates/CleanUp идут после Construct, до собственных методов окна"
+    for previous, current in zip(lifecycle, lifecycle[1:]):
+        if lifecycle_names.index(previous[1]) > lifecycle_names.index(current[1]) and added.intersection({previous[0], current[0]}):
+            yield current[0], "порядок lifecycle базы: Initialize, SubscribeUpdates, CleanUp"
+
+
 def condition_operands(condition):
     depth, current, operands, index = 0, "", [], 0
     while index < len(condition):
@@ -420,7 +455,7 @@ def duplicate_save_stage(cwd):
 
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
-          serialized_property_order, dialogue_lifecycle)
+          serialized_property_order, dialogue_lifecycle, dialogue_lifecycle_order)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle)
 
 
@@ -561,6 +596,35 @@ def self_test():
         lines = ["public class VictoryDialogue : DialogueBase", "{", f"    protected override void {method}() {{ }}", "}"]
         assert not list(dialogue_lifecycle(lines, {3})), "Base lifecycle extension points are allowed"
     print("dialogue-lifecycle self-test ok")
+
+    for base in ("DialogueBase", "Code.Gameplay.Dialogues.UI.DialogueBase", "ScreenBase", "BaseWindow"):
+        ordered = [f"public class VictoryDialogue : {base}", "{",
+                   "    public List<VideoClip> VideoClips => GetClips();",
+                   "    [Inject] private void Construct() { }",
+                   "    protected override void Initialize() { }",
+                   "    protected override void SubscribeUpdates() { }",
+                   "    protected override void CleanUp() { }",
+                   "    public void DisplayCompletedLevel() { }",
+                   "    protected override void OnCloseButtonClick() { }", "}"]
+        assert not list(dialogue_lifecycle_order(ordered, set(range(1, len(ordered) + 1))))
+        wrong = ordered[:]
+        wrong.insert(4, wrong.pop(7))
+        assert len(list(dialogue_lifecycle_order(wrong, {5}))) == 1, "Public method before lifecycle must fail"
+        assert not list(dialogue_lifecycle_order(wrong, {2})), "Untouched declarations do not fail"
+        wrong = ordered[:]
+        wrong.insert(5, wrong.pop(3))
+        assert list(dialogue_lifecycle_order(wrong, set(range(1, len(wrong) + 1)))), "Construct comes before lifecycle"
+        wrong = ordered[:]
+        wrong.insert(5, "    private void PlayContent() { }")
+        assert len(list(dialogue_lifecycle_order(wrong, {6}))) == 1, "Helpers do not split lifecycle"
+        wrong = ordered[:]
+        wrong[4], wrong[6] = wrong[6], wrong[4]
+        assert list(dialogue_lifecycle_order(wrong, {5, 7})), "Lifecycle follows base order"
+        unrelated = ordered[:]
+        unrelated[0] = "public class VictoryDialogue : OtherBase"
+        unrelated.insert(4, unrelated.pop(7))
+        assert not list(dialogue_lifecycle_order(unrelated, set(range(1, len(unrelated) + 1))))
+    print("dialogue-lifecycle-order self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):
