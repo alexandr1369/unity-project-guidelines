@@ -10,20 +10,7 @@ import re
 import subprocess
 import sys
 
-
-def commit_directory(command, cwd):
-    # Папка, где выполнится `git commit`: последний `cd`/`git -C` перед ним, с подстановкой ~, $HOME и переменных команды.
-    variables = {"HOME": os.path.expanduser("~")}
-    directory = cwd
-    for token in re.finditer(r"(\w+)=([^\s;&|]+)|\bcd\s+([^\s;&|]+)|\bgit\s+-C\s+([^\s;&|]+)", command):
-        name, value, cd_path, git_path = token.groups()
-        expand = lambda text: os.path.expanduser(re.sub(r"\$\{?(\w+)\}?", lambda m: variables.get(m.group(1), m.group(0)), text.strip("\"'")))
-        if name:
-            variables[name] = expand(value)
-        else:
-            path = expand(cd_path or git_path)
-            directory = path if os.path.isabs(path) else os.path.join(directory, path)
-    return directory
+from command_directory import GIT, START, command_directory
 
 
 data = json.load(sys.stdin)
@@ -33,26 +20,25 @@ command = tool_input.get("command") or tool_input.get("cmd") or ""
 if isinstance(command, list):
     command = " ".join(command)
 
-START = r"(?:^|[;&|(]\s*)"
 GIT_VERBS = r"(?:Закоммитил|Закомитил|Запушил|Влил|Смержил|Замержил|Коммит|Пуш)"
 reasons = []
 
-for message in re.findall(START + r"git commit\b[^\n]*?\s-[a-zA-Z]*m\s+([\"'])(.*?)\1", command, re.M):
+for message in re.findall(START + GIT + r"\s+commit\b[^\n]*?\s-[a-zA-Z]*m\s+([\"'])(.*?)\1", command, re.M):
     if re.match(GIT_VERBS, message[1].strip()):
         reasons.append("сообщение коммита начинается с git-действия: глагол должен называть изменение в проекте")
 
-unquoted = re.sub(r"([\"']).*?\1", "", command, flags=re.S)
-if re.search(START + r"git commit\b[^\n;&|]*\s(?:-[a-zA-Z]*a[a-zA-Z]*|--all)\b", unquoted, re.M):
+unquoted = re.sub(r"([\"']).*?\1", "ARG", command, flags=re.S)
+if re.search(START + GIT + r"\s+commit\b[^\n;&|]*\s(?:-[a-zA-Z]*a[a-zA-Z]*|--all)\b", unquoted, re.M):
     reasons.append("`git commit -a` уносит незакоммиченные правки владельца: коммит собирать по путям задачи")
-if re.search(START + r"git add\b[^\n;&|]*\s(?:-A|--all)\b", unquoted, re.M):
+if re.search(START + GIT + r"\s+add\b[^\n;&|]*\s(?:-A|--all)\b", unquoted, re.M):
     reasons.append("`git add -A` индексирует всё подряд: добавлять файлы по путям задачи")
 
-commit = re.search(START + r"git(?:\s+-[cC]\s+\S+)*\s+commit(?![-\w])", command, re.M)
+commit = re.search(START + GIT + r"\s+commit(?![-\w])", command, re.M)
 if commit and re.search(START + r"git\b[^\n;&|]*\badd\b", unquoted[:commit.start()], re.M):
     reasons.append("`git add` и `git commit` в одной команде: хук проверяет индекс до запуска команды, и добавленные файлы "
                    "уходят без проверки. Индексируй отдельной командой, коммить следующей")
 if commit:
-    repo = commit_directory(command[:commit.end()], cwd)
+    repo = command_directory(command[:commit.end()], cwd)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     code_checks = importlib.import_module("code-checks")
     found = code_checks.violations(repo) if os.path.isdir(repo) else []
@@ -62,7 +48,7 @@ if commit:
 merge = re.search(START + r"gh pr merge\s+(\d+)", command, re.M)
 if merge:
     # GIT_WORKFLOW.md, стек PR: base дочернего переставляют до merge родителя, после merge поздно.
-    repo = commit_directory(command[:merge.end()], cwd)
+    repo = command_directory(command[:merge.end()], cwd)
     gh = lambda *args: subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True, timeout=4).stdout.strip()
     try:
         head = gh("pr", "view", merge.group(1), "--json", "headRefName", "-q", ".headRefName")

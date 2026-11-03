@@ -1,0 +1,14 @@
+name: Проверки хуков
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 scripts/agent-hooks/test_hooks.py

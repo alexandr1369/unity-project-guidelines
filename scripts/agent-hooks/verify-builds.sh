@@ -7,16 +7,11 @@
 set -uo pipefail
 
 INPUT="$(cat)"
-COMMAND="$(printf '%s' "$INPUT" | python3 -c 'import json,sys; i=json.load(sys.stdin).get("tool_input") or {}; c=i.get("command") or i.get("cmd") or ""; print(" ".join(c) if isinstance(c,list) else c)' 2>/dev/null)"
-
-case "$COMMAND" in
-    *"git push"*) ;;
-    *) exit 0 ;;
-esac
+ROOT="$(printf '%s' "$INPUT" | python3 "$(dirname "$0")/command_directory.py")"
+[ -z "$ROOT" ] && exit 0
 
 command -v dotnet >/dev/null 2>&1 || exit 0
 
-ROOT="${CLAUDE_PROJECT_DIR:-.}"
 PROJECTS=$(ls "$ROOT"/src/*/Code.csproj "$ROOT"/src/*/Code.*.csproj "$ROOT"/src/*/Tests.csproj "$ROOT"/src/*/Tests.*.csproj "$ROOT"/src/*/Code/Code.csproj "$ROOT"/src/*/Tests/Tests.csproj 2>/dev/null)
 [ -z "$PROJECTS" ] && exit 0
 
@@ -31,8 +26,16 @@ while IFS= read -r proj; do
 done <<<"$PROJECTS"
 
 if [ -n "$FAILED" ]; then
-    ERRORS=$(grep -h "error CS\|error MSB" "$LOGS"/*.log 2>/dev/null | head -3 | tr '\n' ' ' | tr '"' "'")
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Сборка падает:%s. Первые ошибки: %s Почини и собери заново перед push."}}' "$FAILED" "$ERRORS"
+    ERRORS=$(grep -h "error CS\|error MSB" "$LOGS"/*.log 2>/dev/null | head -3 | tr '\n' ' ')
+    python3 - "$FAILED" "$ERRORS" <<'PY'
+import json
+import sys
+
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "PreToolUse", "permissionDecision": "deny",
+    "permissionDecisionReason": f"Сборка падает:{sys.argv[1]}. Первые ошибки: {sys.argv[2]} Почини и собери заново перед push."}},
+    ensure_ascii=False))
+PY
     rm -rf "$LOGS"
     exit 0
 fi
