@@ -11,14 +11,14 @@ COMMAND="$(printf '%s' "$INPUT" | python3 -c 'import json,sys; i=json.load(sys.s
 
 case "$COMMAND" in
     *"git push"*) ;;
-    *) printf '{"suppressOutput":true}'; exit 0 ;;
+    *) exit 0 ;;
 esac
 
-command -v dotnet >/dev/null 2>&1 || { printf '{"suppressOutput":true}'; exit 0; }
+command -v dotnet >/dev/null 2>&1 || exit 0
 
 ROOT="${CLAUDE_PROJECT_DIR:-.}"
 PROJECTS=$(ls "$ROOT"/src/*/Code.csproj "$ROOT"/src/*/Code.*.csproj "$ROOT"/src/*/Tests.csproj "$ROOT"/src/*/Tests.*.csproj "$ROOT"/src/*/Code/Code.csproj "$ROOT"/src/*/Tests/Tests.csproj 2>/dev/null)
-[ -z "$PROJECTS" ] && { printf '{"suppressOutput":true}'; exit 0; }
+[ -z "$PROJECTS" ] && exit 0
 
 LOGS=$(mktemp -d)
 FAILED=""
@@ -38,4 +38,3 @@ if [ -n "$FAILED" ]; then
 fi
 
 rm -rf "$LOGS"
-printf '{"suppressOutput":true}'

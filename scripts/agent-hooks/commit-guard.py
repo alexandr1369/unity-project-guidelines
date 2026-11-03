@@ -28,6 +28,7 @@ def commit_directory(command, cwd):
 
 data = json.load(sys.stdin)
 tool_input = data.get("tool_input") or {}
+cwd = tool_input.get("workdir") or data.get("cwd") or "."
 command = tool_input.get("command") or tool_input.get("cmd") or ""
 if isinstance(command, list):
     command = " ".join(command)
@@ -51,7 +52,7 @@ if commit and re.search(START + r"git\b[^\n;&|]*\badd\b", unquoted[:commit.start
     reasons.append("`git add` и `git commit` в одной команде: хук проверяет индекс до запуска команды, и добавленные файлы "
                    "уходят без проверки. Индексируй отдельной командой, коммить следующей")
 if commit:
-    repo = commit_directory(command[:commit.end()], data.get("cwd") or ".")
+    repo = commit_directory(command[:commit.end()], cwd)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     code_checks = importlib.import_module("code-checks")
     found = code_checks.violations(repo) if os.path.isdir(repo) else []
@@ -61,7 +62,7 @@ if commit:
 merge = re.search(START + r"gh pr merge\s+(\d+)", command, re.M)
 if merge:
     # GIT_WORKFLOW.md, стек PR: base дочернего переставляют до merge родителя, после merge поздно.
-    repo = commit_directory(command[:merge.end()], data.get("cwd") or ".")
+    repo = commit_directory(command[:merge.end()], cwd)
     gh = lambda *args: subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True, timeout=4).stdout.strip()
     try:
         head = gh("pr", "view", merge.group(1), "--json", "headRefName", "-q", ".headRefName")
