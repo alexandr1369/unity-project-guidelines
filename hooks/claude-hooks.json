@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/prompt-reminders.py\"",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/agent-hooks/prompt-reminders.py\"",
             "timeout": 10
           }
         ]
@@ -17,12 +17,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/commit-guard.py\"",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/agent-hooks/commit-guard.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/verify-builds.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/agent-hooks/verify-builds.sh\"",
             "if": "Bash(git push*)",
             "timeout": 600,
             "statusMessage": "Собираю csproj проекта перед push..."
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/mcp-long-command-guard.py\"",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/agent-hooks/mcp-long-command-guard.py\"",
             "timeout": 10
           }
         ]
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/pr-description-reminder.py\"",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/agent-hooks/pr-description-reminder.py\"",
             "timeout": 10
           }
         ]

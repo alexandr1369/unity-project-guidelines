@@ -11,4 +11,4 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v6
-      - run: python3 scripts/agent-hooks/test_hooks.py
+      - run: python3 -B -m unittest discover -s tests -p 'test_*.py'

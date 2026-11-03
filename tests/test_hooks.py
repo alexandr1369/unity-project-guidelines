@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Регрессии командных хуков: только временные Git-репозитории и поддельная сборка."""
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
-SCRIPTS = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
+RUNTIME = ROOT / "runtime"
+SCRIPTS = RUNTIME / "scripts" / "agent-hooks"
 FILE = "Assets/Code/Tests/EditMode/VictoryDialogue.cs"
 VALID = "public class VictoryDialogue : DialogueBase\n{\n    protected override void Initialize() { }\n}\n"
 INVALID = VALID.replace("protected override void Initialize()", "private void OnEnable()")
@@ -52,8 +57,8 @@ class HookTests(unittest.TestCase):
             event["prompt"] = prompt
         if tool_response is not None:
             event["tool_response"] = tool_response
-        runner = "bash" if script.endswith(".sh") else sys.executable
-        result = subprocess.run([runner, str(SCRIPTS / script)], input=json.dumps(event),
+        runner = ["bash"] if script.endswith(".sh") else [sys.executable, "-B"]
+        result = subprocess.run([*runner, str(SCRIPTS / script)], input=json.dumps(event),
                                 cwd=self.root, env=env, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
@@ -72,7 +77,7 @@ class HookTests(unittest.TestCase):
         self.assertIn("Самопроверка перед отчётом", context["additionalContext"])
 
     def test_existing_code_check_regressions(self):
-        result = subprocess.run([sys.executable, str(SCRIPTS / "code-checks.py"), "--self-test"],
+        result = subprocess.run([sys.executable, "-B", str(SCRIPTS / "code-checks.py"), "--self-test"],
                                 capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("dialogue-lifecycle self-test ok", result.stdout)
@@ -231,6 +236,13 @@ class HookTests(unittest.TestCase):
         self.stage(VALID)
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
+    def test_missing_guidelines_does_not_disable_mechanical_denial(self):
+        isolated = self.root / "isolated" / "runtime"
+        shutil.copytree(RUNTIME, isolated)
+        self.stage(INVALID)
+        with patch.object(sys.modules[__name__], "SCRIPTS", isolated / "scripts" / "agent-hooks"):
+            self.denied(self.hook('git commit -m "Исправил окно"'), "OnEnable")
+
     def test_non_lifecycle_style_violation_is_also_denied(self):
         self.stage(VALID.replace("    protected override void Initialize() { }",
                                 "    private int Count()\n    {\n        int count = 1;\n\n        return count;\n    }"))
@@ -292,6 +304,106 @@ class HookTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.hook(command, script="verify-builds.sh", env=env), "")
         self.assertFalse(marker.exists())
+
+
+class GuidelinesPathTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="guidelines-path-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        spec = importlib.util.spec_from_file_location("guidelines_path_test", SCRIPTS / "guidelines_path.py")
+        self.resolver = importlib.util.module_from_spec(spec)
+        with patch.object(sys, "dont_write_bytecode", True):
+            spec.loader.exec_module(self.resolver)
+
+    def document(self, plugin, name="AI_COLLABORATION_GUIDELINES.md"):
+        path = plugin / "skills" / "unity-project-guidelines" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Правила\n")
+        return path
+
+    def resolve(self, runtime, name="AI_COLLABORATION_GUIDELINES.md"):
+        script = runtime / "scripts" / "agent-hooks" / "guidelines_path.py"
+        with patch.object(self.resolver, "__file__", str(script)):
+            return Path(self.resolver.guidelines_path(name))
+
+    def test_source_layout_reads_current_guidelines(self):
+        plugin = self.root / "source"
+        document = self.document(plugin)
+        self.assertEqual(self.resolve(plugin / "runtime").resolve(), document.resolve())
+        document.write_text("# Обновлённые правила\n")
+        self.assertEqual(self.resolve(plugin / "runtime").read_text(), "# Обновлённые правила\n")
+
+    def test_claude_layout_reads_guidelines_from_main_plugin(self):
+        plugin = self.root / "claude" / "cache" / "unity-project-guidelines" / "690b5c9"
+        document = self.document(plugin, "GIT_WORKFLOW.md")
+        self.assertEqual(self.resolve(plugin / "runtime", "GIT_WORKFLOW.md").resolve(), document.resolve())
+
+    def test_codex_layout_reads_sibling_guidelines_plugin(self):
+        cache = self.root / "codex" / "cache" / "unity-project-guidelines"
+        runtime = cache / "unity-project-hooks" / "local"
+        document = self.document(cache / "unity-project-guidelines" / "local")
+        self.assertEqual(self.resolve(runtime).resolve(), document.resolve())
+
+    def test_missing_document_reports_required_main_plugin(self):
+        with self.assertRaisesRegex(FileNotFoundError, "unity-project-guidelines"):
+            self.resolve(self.root / "source" / "runtime")
+
+
+class RuntimePackageTests(unittest.TestCase):
+    def handlers(self, manifest, plugin):
+        definition = json.loads(manifest.read_text())["hooks"]
+        hooks = json.loads((plugin / definition.removeprefix("./")).read_text())["hooks"]
+        return [(event, handler) for event, groups in hooks.items()
+                for group in groups for handler in group["hooks"]]
+
+    def test_codex_main_plugin_is_skills_only(self):
+        manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text())
+        self.assertFalse(manifest.get("hooks"))
+        self.assertTrue((ROOT / manifest["skills"].removeprefix("./")).is_dir())
+        self.assertFalse((ROOT / "hooks" / "hooks.json").exists())
+
+    def test_codex_marketplace_separates_the_runtime_package(self):
+        marketplace = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text())
+        sources = {plugin["name"]: (ROOT / plugin["source"]["path"]).resolve()
+                   for plugin in marketplace["plugins"]}
+        self.assertEqual(sources["unity-project-guidelines"], ROOT.resolve())
+        self.assertEqual(sources["unity-project-hooks"], RUNTIME.resolve())
+
+    def test_codex_runtime_has_five_unique_local_handlers(self):
+        handlers = self.handlers(RUNTIME / ".codex-plugin" / "plugin.json", RUNTIME)
+        self.assertEqual(len(handlers), 5)
+        self.assertCountEqual([event for event, _ in handlers],
+                              ["UserPromptSubmit", "PreToolUse", "PreToolUse", "PreToolUse", "PostToolUse"])
+        scripts = []
+        for _, handler in handlers:
+            arguments = shlex.split(handler["command"].replace("${CLAUDE_PLUGIN_ROOT}", str(RUNTIME)))
+            script = Path(arguments[-1]).resolve()
+            self.assertTrue(script.is_file())
+            self.assertTrue(script.is_relative_to(RUNTIME.resolve()))
+            if arguments[0] == "python3":
+                self.assertIn("-B", arguments)
+            scripts.append(script.name)
+        self.assertCountEqual(scripts, ["commit-guard.py", "verify-builds.sh", "mcp-long-command-guard.py",
+                                        "prompt-reminders.py", "pr-description-reminder.py"])
+
+    def test_claude_main_plugin_points_once_to_same_runtime(self):
+        handlers = self.handlers(ROOT / ".claude-plugin" / "plugin.json", ROOT)
+        self.assertEqual(len(handlers), 5)
+        commands = [handler["command"].replace("${CLAUDE_PLUGIN_ROOT}", str(ROOT)) for _, handler in handlers]
+        scripts = [Path(shlex.split(command)[-1]).resolve() for command in commands]
+        self.assertEqual(len(set(scripts)), 5)
+        self.assertTrue(all(script.is_file() and script.is_relative_to(RUNTIME.resolve()) for script in scripts))
+        self.assertCountEqual([script.name for script in scripts],
+                              ["commit-guard.py", "verify-builds.sh", "mcp-long-command-guard.py",
+                               "prompt-reminders.py", "pr-description-reminder.py"])
+
+    def test_runtime_excludes_guidelines_tests_and_generated_files(self):
+        forbidden = [str(path.relative_to(RUNTIME)) for path in RUNTIME.rglob("*")
+                     if path.is_symlink() or path.name == "__pycache__" or path.suffix in (".md", ".pyc", ".log")
+                     or path.name.startswith("test_")]
+        self.assertEqual(forbidden, [])
+        self.assertFalse(Path(__file__).resolve().is_relative_to(RUNTIME.resolve()))
 
 
 if __name__ == "__main__":

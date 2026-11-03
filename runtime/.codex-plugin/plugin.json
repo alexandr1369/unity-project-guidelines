@@ -1,0 +1,20 @@
+{
+  "name": "unity-project-hooks",
+  "description": "Автоматические проверки Unity-проектов команды: код, Git, сборка и напоминания по актуальным правилам.",
+  "author": {
+    "name": "alexandr1369",
+    "url": "https://github.com/alexandr1369"
+  },
+  "homepage": "https://github.com/alexandr1369/unity-project-guidelines",
+  "repository": "https://github.com/alexandr1369/unity-project-guidelines",
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "Unity Project Hooks",
+    "shortDescription": "Автоматические проверки Unity-проектов команды",
+    "developerName": "alexandr1369",
+    "category": "Coding",
+    "capabilities": [
+      "Lifecycle hooks"
+    ]
+  }
+}

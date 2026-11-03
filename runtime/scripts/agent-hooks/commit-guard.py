@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 from command_directory import GIT, START, command_directory
+from guidelines_path import guidelines_path
 
 
 data = json.load(sys.stdin)
@@ -69,7 +70,7 @@ if reasons:
         "permissionDecisionReason": "; ".join(reasons) + ". Сверься с правилом: коммиты — GIT_WORKFLOW.md, код — CODE_STYLE.md и OPTIONAL_ENTITAS.md."}},
         ensure_ascii=False))
 elif commit:
-    guidelines = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "skills", "unity-project-guidelines", "AI_COLLABORATION_GUIDELINES.md"))
+    guidelines = guidelines_path("AI_COLLABORATION_GUIDELINES.md")
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": "Перед коммитом: до публикации и отчёта о готовности сам пройди весь итоговый diff по разделам «Самопроверка перед отчётом» и «Выводы из замечаний владельца» в " + guidelines + ". Механический допуск не доказывает смысловую корректность."}}, ensure_ascii=False))

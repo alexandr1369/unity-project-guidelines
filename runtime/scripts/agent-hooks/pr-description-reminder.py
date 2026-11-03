@@ -8,6 +8,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime
@@ -15,6 +16,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import audit_due
 from command_directory import GIT, START, command_directory
+from guidelines_path import guidelines_path
 
 QUERY = """query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:30){nodes{
 number title body createdAt lastEditedAt baseRefName headRefName}}}}"""
@@ -137,7 +139,7 @@ def merged_branches_note(cwd):
 
 
 def workflow_rules():
-    workflow = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "skills", "unity-project-guidelines", "GIT_WORKFLOW.md")
+    workflow = guidelines_path("GIT_WORKFLOW.md")
     rules = []
     for line in open(workflow, encoding="utf-8"):
         if not rules and not line.startswith("- Описание PR по умолчанию"):
@@ -221,7 +223,7 @@ cwd = command_directory(command[:operation.end()], cwd)
 if is_commit and not is_push and not is_pr_create:
     names = new_type_names(cwd) if success is True else []
     components = new_components(cwd) if success is True else []
-    guidelines = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "skills", "unity-project-guidelines", "AI_COLLABORATION_GUIDELINES.md"))
+    guidelines = guidelines_path("AI_COLLABORATION_GUIDELINES.md")
     messages = ["После команды коммита: до push и отчёта о готовности пройди итоговый diff целиком по разделам "
                 "«Самопроверка перед отчётом» и «Выводы из замечаний владельца» в " + guidelines + "."]
     if success is None:
@@ -258,7 +260,7 @@ elif stale:
     numbers = " ".join(str(pr["number"]) for pr, _, _ in stale)
     context = ("Описание PR старше коммитов. Сверь каждую PR ниже с итоговым diff от base до head: расходится — перепиши "
                "описание целиком, совпадает — отметь сверку из папки репозитория: "
-               f"`{os.path.realpath(__file__)} --checked {numbers}` (только сверенные номера). "
+               f"`python3 -B {shlex.quote(os.path.realpath(__file__))} --checked {numbers}` (только сверенные номера). "
                "Пока не сделано, напоминание повторяется после каждого push. В ответе владельцу по каждой PR одна строка: "
                "«Описание #N: сверено, без изменений» или «Описание #N: обновлено — что поменялось».\n\n"
                + "\n".join(blocks))

@@ -1,8 +1,12 @@
 # Общие правила Unity-проектов
 
-Плагин `unity-project-guidelines` для Claude Code и Codex: навык с командными правилами
-и хуки, которые проверяют часть правил во время работы агента. Порядок чтения правил —
+Командные Unity-правила и проверки для Claude Code и Codex. Порядок чтения правил —
 в [SKILL.md](skills/unity-project-guidelines/SKILL.md).
+
+В Codex это два пакета из одного репозитория: `unity-project-guidelines` содержит навык,
+`unity-project-hooks` — только исполняемые проверки. Обновление текста правил не меняет
+содержимое пакета хуков и не требует нового доверия к ним. Проверки читают актуальные
+правила как данные. Claude Code по-прежнему устанавливает один плагин со всем содержимым.
 
 ## Установка
 
@@ -21,12 +25,14 @@ Codex:
 ```sh
 codex plugin marketplace add alexandr1369/unity-project-guidelines
 codex plugin add unity-project-guidelines@unity-project-guidelines
+codex plugin add unity-project-hooks@unity-project-guidelines
 ```
 
-В Codex хуки должны быть включены и доверены текущей версии: Settings → Hooks → Unity Project
-Guidelines → Review / Trust (в консоли — команда `/hooks`). После изменения скриптов плагина
-доверие может потребоваться повторно: `Modified` или `Untrusted` означает, что хук не выполняется.
-Сначала прочитать изменённые скрипты и подтвердить именно текущую версию; требование доверия не отключать.
+В Codex пять хуков пакета Unity Project Hooks должны быть включены и доверены текущей
+версии: Settings → Hooks → Review / Trust (в консоли — команда `/hooks`). При первой
+установке и изменении исполняемых проверок требуется проверка именно текущей версии;
+`Modified` или `Untrusted` означает, что хук не выполняется. Обновления Markdown этого
+запроса не вызывают. Требование доверия к исполняемому коду не отключать.
 
 После установки или переноса проверь фактический вызов хуков по разделу «Уровни контроля»
 в [AI_COLLABORATION_GUIDELINES.md](skills/unity-project-guidelines/AI_COLLABORATION_GUIDELINES.md).
@@ -39,12 +45,19 @@ claude plugin marketplace update unity-project-guidelines
 claude plugin update unity-project-guidelines@unity-project-guidelines
 codex plugin marketplace upgrade unity-project-guidelines
 codex plugin add unity-project-guidelines@unity-project-guidelines
+codex plugin add unity-project-hooks@unity-project-guidelines
 ```
 
 После обновления проверить статус через Hooks или `hooks/list` загрузчика той версии Codex,
-в которой идёт работа: нужны `enabled: true` и `trustStatus: trusted`, без ошибок загрузки.
-Затем безопасной пробой `git add --all --dry-run` проверить запрет до выполнения команды и
-пробным коммитом в отдельном временном репозитории — блокировку нарушения кодстайла.
+в которой идёт работа: нужны ровно пять хуков `unity-project-hooks`, `enabled: true` и
+`trustStatus: trusted`, без ошибок загрузки. У пакета `unity-project-guidelines` хуков быть
+не должно: два источника запустят проверки дважды. При переходе со старой установки
+обновить оба пакета, проверить код и доверить новую версию пакета проверок один раз.
+
+После установки или изменения проверок безопасной пробой `git add --all --dry-run`
+проверить запрет до выполнения команды и пробным коммитом в отдельном временном
+репозитории — блокировку нарушения кодстайла. После обновления только правил повторное
+доверие не требуется; если загрузчик его запрашивает, проверить разделение пакетов.
 Успешный ручной запуск скрипта эту проверку не заменяет. Порядок доверия описан в
 [документации Codex](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
 
@@ -59,7 +72,7 @@ codex plugin add unity-project-guidelines@unity-project-guidelines
 ## Проверки плагина
 
 ```sh
-python3 scripts/agent-hooks/test_hooks.py
+python3 tests/test_hooks.py
 ```
 
 Тесты используют стандартную библиотеку Python, временные Git-репозитории и поддельную
