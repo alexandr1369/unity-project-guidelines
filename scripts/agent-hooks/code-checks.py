@@ -259,6 +259,20 @@ def animator_lifecycle(lines, added, path=""):
             yield number, "Unity-колбэк у аниматора: Initialize/CleanUp ему зовёт владелец"
 
 
+def dialogue_lifecycle(lines, added):
+    # CODE_STYLE.md, «Паттерны Unity»: наследник окна не заводит второй lifecycle поверх базы, включая OnUpdate.
+    source = "\n".join(lines)
+    owner = re.search(r"^\s*(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:\w+\.)*(DialogueBase|ScreenBase|BaseWindow)\b", source, re.M)
+    if not owner:
+        return
+    for number in sorted(added):
+        if number > len(lines):
+            continue
+        callback = re.match(r"\s*(?:(?:public|private|protected|internal|override|virtual|sealed|new|async|static)\s+)*(?:void|(?:System\.Collections\.)?IEnumerator)\s+(Awake|OnEnable|Start|Update|LateUpdate|FixedUpdate|OnDisable|OnDestroy|OnUpdate)\s*\(\s*\)", lines[number - 1])
+        if callback:
+            yield number, f"{callback.group(1)} у наследника {owner.group(1)}: используй штатные Initialize/SubscribeUpdates/CleanUp базы; собственный покадровый сценарий во view не добавляй"
+
+
 def condition_operands(condition):
     depth, current, operands, index = 0, "", [], 0
     while index < len(condition):
@@ -406,7 +420,7 @@ def duplicate_save_stage(cwd):
 
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
-          serialized_property_order)
+          serialized_property_order, dialogue_lifecycle)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle)
 
 
@@ -529,6 +543,24 @@ def violations(cwd):
 def self_test():
     import tempfile
     from pathlib import Path
+
+    for base in ("DialogueBase", "Code.Gameplay.Dialogues.UI.DialogueBase", "ScreenBase", "BaseWindow"):
+        for callback in ("Awake", "OnEnable", "Start", "Update", "LateUpdate", "FixedUpdate", "OnDisable", "OnDestroy", "OnUpdate"):
+            modifier = "protected override" if callback == "OnUpdate" else "private"
+            lines = [f"public class VictoryDialogue : {base}", "{", f"    {modifier} void {callback}() {{ }}", "}"]
+            assert len(list(dialogue_lifecycle(lines, {3}))) == 1, (base, callback)
+            assert not list(dialogue_lifecycle(lines, {4})), "Untouched legacy callbacks do not block a change"
+    lines = ["public class VictoryDialogue : DialogueBase", "{", "    private async void OnEnable() { }", "}"]
+    assert len(list(dialogue_lifecycle(lines, {3}))) == 1
+    lines[2] = "    private System.Collections.IEnumerator Start() { yield break; }"
+    assert len(list(dialogue_lifecycle(lines, {3}))) == 1
+    for owner in ("public class DialogueBase : MonoBehaviour", "public class SettingsEditor : EditorWindow"):
+        lines = [owner, "{", "    private void OnEnable() { }", "}"]
+        assert not list(dialogue_lifecycle(lines, {3})), "The rule is scoped to derived game windows"
+    for method in ("Initialize", "SubscribeUpdates", "CleanUp"):
+        lines = ["public class VictoryDialogue : DialogueBase", "{", f"    protected override void {method}() {{ }}", "}"]
+        assert not list(dialogue_lifecycle(lines, {3})), "Base lifecycle extension points are allowed"
+    print("dialogue-lifecycle self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):
