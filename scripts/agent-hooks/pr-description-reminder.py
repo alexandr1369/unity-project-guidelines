@@ -163,13 +163,17 @@ def command_succeeded(response):
             response = json.loads(response)
         except ValueError:
             status = re.search(r"^Process exited with code (\d+)\s*$", response, re.M)
-            return status is not None and status.group(1) == "0"
+            return status.group(1) == "0" if status else None
     if not isinstance(response, dict):
-        return False
-    if "exit_code" in response:
+        return None
+    if response.get("exit_code") is not None:
         return response["exit_code"] == 0
+    if response.get("interrupted") is True:
+        return False
     # Claude PostToolUse вызывается только после успеха; его Bash-ответ не содержит exit_code.
-    return response.get("interrupted") is False and "stdout" in response and "stderr" in response
+    if response.get("interrupted") is False and "stdout" in response and "stderr" in response:
+        return True
+    return None
 
 
 if len(sys.argv) > 2 and sys.argv[1] == "--checked":
@@ -188,7 +192,8 @@ is_commit = re.search(START + GIT + r"\s+commit\b(?!-)", command, re.M)
 is_merge = re.search(START + r"gh pr merge\b", command, re.M)
 is_sync = re.search(START + GIT + r"\s+(?:fetch|pull)\b", command, re.M)
 cwd = tool_input.get("workdir") or data.get("cwd") or os.getcwd()
-if (is_commit or is_push or is_pr_create or is_merge or is_sync) and not command_succeeded(data.get("tool_response")):
+success = command_succeeded(data.get("tool_response"))
+if (is_commit or is_push or is_pr_create or is_merge or is_sync) and success is not True and not (is_commit and success is None):
     sys.exit(0)
 if is_merge and not is_push and not is_pr_create and not is_commit:
     merge_cwd = command_directory(command[:is_merge.end()], cwd)
@@ -214,11 +219,13 @@ operation = is_commit or is_push or is_pr_create
 cwd = command_directory(command[:operation.end()], cwd)
 
 if is_commit and not is_push and not is_pr_create:
-    names = new_type_names(cwd)
-    components = new_components(cwd)
+    names = new_type_names(cwd) if success is True else []
+    components = new_components(cwd) if success is True else []
     guidelines = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "skills", "unity-project-guidelines", "AI_COLLABORATION_GUIDELINES.md"))
-    messages = ["После успешного коммита до push и отчёта о готовности пройди итоговый diff целиком по разделам "
+    messages = ["После команды коммита: до push и отчёта о готовности пройди итоговый diff целиком по разделам "
                 "«Самопроверка перед отчётом» и «Выводы из замечаний владельца» в " + guidelines + "."]
+    if success is None:
+        messages.insert(0, "Результат команды ещё не подтверждён: дождись завершения и проверь факт коммита, затем выполни самопроверку.")
     if names:
         messages.append(
             "Новые имена в коммите: " + ", ".join(names) + ". Для каждого до push назови, откуда слово: так понятие уже "

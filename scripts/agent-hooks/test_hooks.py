@@ -120,14 +120,26 @@ class HookTests(unittest.TestCase):
                 self.assertIn("Выводы из замечаний владельца", output["additionalContext"])
                 self.assertNotIn("Новые имена", output["additionalContext"])
 
-    def test_failed_or_unknown_commit_result_does_not_claim_success(self):
-        responses = [None, {}, {"exit_code": 1, "output": "nothing to commit"},
+    def test_failed_commit_result_does_not_claim_success(self):
+        responses = [{"exit_code": 1, "output": "nothing to commit"},
                      "Process exited with code 1\nFinal output:\nnothing to commit",
                      {"stdout": "", "stderr": "interrupted", "interrupted": True, "isImage": False}]
         for response in responses:
             with self.subTest(response=response):
                 self.assertEqual(self.hook('git commit -m "Исправил окно"', script="pr-description-reminder.py",
                                            tool_response=response), "")
+
+    def test_unknown_commit_result_requests_confirmation_and_self_check(self):
+        for response in (None, {}, {"exit_code": None, "session_id": 1}, {"unknown_wrapper": "result"}):
+            with self.subTest(response=response):
+                output = json.loads(self.hook('git commit -m "Исправил окно"', script="pr-description-reminder.py",
+                                             tool_response=response))["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("После команды коммита:", output)
+                self.assertIn("дождись завершения", output)
+                self.assertIn("Самопроверка перед отчётом", output)
+                self.assertNotIn("успешного коммита", output)
+                self.assertNotIn("Новые имена", output)
+                self.assertNotIn("Новые компоненты", output)
 
     def test_commit_self_check_keeps_existing_name_and_component_reminders(self):
         file = self.repo / "Assets/Code/FlightComponent.cs"

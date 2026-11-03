@@ -72,4 +72,4 @@ elif commit:
     guidelines = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "skills", "unity-project-guidelines", "AI_COLLABORATION_GUIDELINES.md"))
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
-        "additionalContext": "До публикации и отчёта о готовности сам пройди весь итоговый diff по разделам «Самопроверка перед отчётом» и «Выводы из замечаний владельца» в " + guidelines + ". Механический допуск не доказывает смысловую корректность."}}, ensure_ascii=False))
+        "additionalContext": "Перед коммитом: до публикации и отчёта о готовности сам пройди весь итоговый diff по разделам «Самопроверка перед отчётом» и «Выводы из замечаний владельца» в " + guidelines + ". Механический допуск не доказывает смысловую корректность."}}, ensure_ascii=False))
