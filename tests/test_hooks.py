@@ -81,6 +81,7 @@ class HookTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("dialogue-lifecycle self-test ok", result.stdout)
+        self.assertIn("mono-lifecycle-order self-test ok", result.stdout)
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
 
     def test_unsafe_git_commands_are_denied(self):
@@ -259,6 +260,37 @@ class HookTests(unittest.TestCase):
         self.stage(VALID.replace("    protected override", public_method + "    protected override"))
         self.denied(self.hook('git commit -m "Исправил окно"'), "блок lifecycle")
         self.stage(VALID.replace("\n}\n", "\n" + public_method + "}\n"))
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+
+    def test_monobehaviour_callbacks_precede_own_lifecycle_methods(self):
+        header = "public class VictoryDialogue : MonoBehaviour\n{\n"
+        construct = "    private void Construct() { }\n"
+        initialize = "    public void Initialize() { }\n"
+        callbacks = "    private void Start() { Initialize(); }\n    private void OnDestroy() { CleanUp(); }\n"
+        cleanup = "    public void CleanUp() { }\n"
+        self.stage(header + construct + initialize + callbacks + cleanup + "}\n")
+        self.denied(self.hook('git commit -m "Исправил окно"'), "перед Unity callbacks")
+        self.stage(header + construct + callbacks + initialize + cleanup + "}\n")
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+
+    def test_service_method_names_do_not_make_them_unity_callbacks(self):
+        source = ("public class VictoryDialogue\n{\n"
+                  "    public void Initialize() { }\n"
+                  "    public void Start() { }\n"
+                  "    public void CleanUp() { }\n}\n")
+        self.stage(source)
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+
+    def test_unknown_unity_on_messages_do_not_cause_order_denial(self):
+        source = ("public class VictoryDialogue : MonoBehaviour\n{\n"
+                  "    private void Construct() { }\n"
+                  "    private void OnCollisionEnter(Collision collision) { }\n"
+                  "    private void OnDrawGizmos() { }\n"
+                  "    private void Start() { Initialize(); }\n"
+                  "    private void OnDestroy() { CleanUp(); }\n"
+                  "    public void Initialize() { }\n"
+                  "    public void CleanUp() { }\n}\n")
+        self.stage(source)
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
     def test_staged_violation_is_denied_in_both_payload_formats(self):

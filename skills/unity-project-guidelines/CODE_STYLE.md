@@ -109,13 +109,13 @@
   4. Поля (`[SerializeField]`/public/protected/private).
   5. Конструкторы.
   6. `[Inject] private void Construct(...)` (если есть).
-  7. Методы инициализации (`Initialize`, `SubscribeUpdates`, и аналогичные init-методы).
-  8. Unity lifecycle methods (`Awake`, `OnEnable`, `Start`, `Update`, и т.д.) в порядке выполнения.
+  7. Unity lifecycle methods (`Awake`, `OnEnable`, `Start`, `Update`, `OnDestroy` и т.д.) в порядке выполнения.
+  8. Методы инициализации (`Initialize`, `SubscribeUpdates`, и аналогичные init-методы).
   9. Методы очистки (`CleanUp`, `Dispose`, `Unsubscribe`, и т.п.).
   10. Остальные public методы.
   11. Protected/internal/private методы.
   12. Callback/handler методы (`On...`) размещать в самом низу файла, в том же порядке, в каком на них подписываются в `Initialize`/`SubscribeUpdates`: сначала кнопки, затем события сервисов по порядку подписки.
-- Методы штатного жизненного цикла базы или интерфейса, включая `protected override`, размещать единым блоком после `Construct` и до собственных public-методов, независимо от видимости. Внутри блока сохранять порядок контракта: например, `Initialize` → `SubscribeUpdates` → `CleanUp`. Так контракт базы читается целиком, а не разбивается собственными методами наследника. Overrides обработчиков `On...` остаются в секции handlers внизу. Для явных lifecycle overrides прямых наследников `DialogueBase`/`ScreenBase`/`BaseWindow` порядок проверяет `code-checks.py`.
+- Методы штатного жизненного цикла базы или интерфейса, включая `protected override`, размещать единым блоком после `Construct` и разрешённых у этого типа Unity callbacks, до остальных собственных public-методов, независимо от видимости. Внутри блока сохранять порядок контракта: например, `Initialize` → `SubscribeUpdates` → `CleanUp`. Имя `Initialize` и модификатор `override` не дают приоритета над Unity callbacks: сначала читаются точки входа движка, затем вызываемые ими методы. Это не разрешает собственные Unity callbacks наследникам `DialogueBase`/`ScreenBase`/`BaseWindow`: они используют lifecycle базы. Overrides обработчиков `On...` остаются в секции handlers внизу. `code-checks.py` проверяет порядок известных Unity callbacks прямых наследников `MonoBehaviour` и явных lifecycle overrides прямых наследников окон. Неопознанные `On...`-методы скрипт не использует как доказательство нарушения порядка: среди них могут быть другие сообщения Unity; их принадлежность и место ассистент сверяет вручную.
 - Между секциями оставлять пустые строки, чтобы структура читалась сразу.
 - Внутри блока `const` / `static readonly` сначала всегда размещать все `const`, ниже — все `static readonly`.
 - Между последней `const` и первой `static readonly` всегда стоит ровно одна пустая строка-разделитель. Это два разных блока, слипаться они не должны никогда.
