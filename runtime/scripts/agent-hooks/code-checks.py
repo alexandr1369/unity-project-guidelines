@@ -492,9 +492,38 @@ def duplicate_save_stage(cwd):
     return found
 
 
+def ecs_group_usage(lines, added):
+    # OPTIONAL_ENTITAS.md: у Entity-итератора доменное имя; наличие группы проверяют обходом, не count.
+    source = "\n".join(lines)
+    source = re.sub(r'(?P<raw>"{3,})[\s\S]*?(?P=raw)|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/',
+                    lambda match: re.sub(r"[^\n]", " ", match.group()), source)
+    groups = set(re.findall(r"\bIGroup\s*<\s*(?:\w+\.)*\w*Entity\s*>\s+(\w+)\b", source))
+    group_count = r"(?<![\w.])(?:this\s*\.\s*)?(\w+)\s*\.\s*(?:count|Count)\b"
+    comparison = r"(?:==|!=|<=|>=|<|>)"
+    rules = (
+        (r"\bforeach\s*\(\s*(?:\w+\.)*\w*Entity\s+_+\s+in\s+[^;{}]*?\)", False,
+         "итератор Entity _/__/___: сохрани доменное имя, даже если сущность не читается"),
+        (r"\bforeach\s*\(\s*var\s+_+\s+in\s+(?:this\s*\.\s*)?(\w+)"
+         r"(?:\s*\.\s*(?:GetEntities\s*\([^()]*\)|AsEnumerable\s*\(\s*\)))?\s*\)", True,
+         "итератор Entity _/__/___: сохрани доменное имя, даже если сущность не читается"),
+        (group_count + r"\s*" + comparison + r"\s*0(?![\w.])", True,
+         "наличие ECS-группы через count/Count: используй foreach с доменным именем и ранним выходом или флагом"),
+        (r"(?<![\w.])0\s*" + comparison + r"\s*" + group_count, True,
+         "наличие ECS-группы через count/Count: используй foreach с доменным именем и ранним выходом или флагом"),
+    )
+    for pattern, requires_group, message in rules:
+        for match in re.finditer(pattern, source):
+            if requires_group and match.group(1) not in groups:
+                continue
+            start = source.count("\n", 0, match.start()) + 1
+            end = source.count("\n", 0, match.end()) + 1
+            if added.intersection(range(start, end + 1)):
+                yield start, message
+
+
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
-          serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order)
+          serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle)
 
 

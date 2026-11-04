@@ -48,6 +48,18 @@ class HookTests(unittest.TestCase):
         (self.repo / FILE).write_text(source)
         self.git("add", "--", FILE)
 
+    def stage_ecs(self, body):
+        source = ("public class VictoryDialogue\n{\n"
+                  "    private readonly IGroup<GameEntity> _requests;\n"
+                  "    private readonly IGroup<MetaEntity> _boards;\n"
+                  "    private readonly Entitas.IGroup<Code.InputEntity> _inputs;\n"
+                  "    private readonly List<GameEntity> _entities;\n"
+                  "    private readonly List<int> _numbers;\n"
+                  "    private readonly Dictionary<int, GameEntity> _byId;\n"
+                  "    private readonly List<(GameEntity Entity, int Index)> _pairs;\n\n" + body + "\n}\n")
+        self.stage(source)
+        return source
+
     def hook(self, command, *, script="commit-guard.py", key="cmd", cwd=None, workdir=None, env=None, prompt=None, tool_response=None):
         tool_input = {key: command}
         if workdir is not None:
@@ -361,6 +373,127 @@ class HookTests(unittest.TestCase):
             with self.subTest(declaration=declaration):
                 self.stage("public static class VictoryDialogue\n{\n    " + declaration + " { }\n}\n")
                 self.denied(self.hook('git commit -m "Исправил окно"'), "extension на конфиг или данные")
+
+    def test_ecs_group_domain_iterators_are_allowed_even_when_unused(self):
+        body = ("    public void Execute()\n    {\n"
+                "        foreach (GameEntity request in _requests)\n        {\n"
+                "            foreach (MetaEntity board in _boards)\n            {\n"
+                "                Apply();\n            }\n        }\n"
+                "        foreach (var input in _inputs)\n        {\n"
+                "            Handle(input);\n        }\n    }")
+        self.stage_ecs(body)
+        self.commit_allowed(self.hook('git commit -m "Исправил обход"'))
+
+    def test_ecs_group_placeholder_iterators_are_denied(self):
+        for entity_type, group in (("GameEntity", "_requests"), ("MetaEntity", "_boards"),
+                                   ("Code.InputEntity", "_inputs"), ("var", "this._requests")):
+            for placeholder in ("_", "__", "___"):
+                with self.subTest(entity_type=entity_type, placeholder=placeholder):
+                    self.stage_ecs("    public void Execute()\n    {\n"
+                                   f"        foreach ({entity_type} {placeholder} in {group})\n"
+                                   "        {\n            Apply();\n        }\n    }")
+                    self.denied(self.hook('git commit -m "Исправил обход"'), "итератор Entity")
+
+    def test_buffered_ecs_group_placeholder_iterators_are_denied(self):
+        for entity_type in ("GameEntity", "var"):
+            for source in ("_requests.GetEntities(_entities)", "this._requests.GetEntities(_entities)",
+                           "_requests.AsEnumerable()", "this._requests.AsEnumerable()"):
+                with self.subTest(entity_type=entity_type, source=source):
+                    self.stage_ecs("    public void Execute()\n    {\n"
+                                   f"        foreach ({entity_type} _ in {source})\n"
+                                   "        {\n            Apply();\n        }\n    }")
+                    self.denied(self.hook('git commit -m "Исправил обход"'), "итератор Entity")
+
+    def test_typed_entity_list_placeholders_are_denied_without_group_declarations(self):
+        self.stage("public class VictoryDialogue\n{\n"
+                   "    private readonly List<GameEntity> _entities;\n"
+                   "    public void Execute()\n    {\n"
+                   "        foreach (GameEntity _ in _entities)\n        {\n"
+                   "            Apply();\n        }\n    }\n}\n")
+        self.denied(self.hook('git commit -m "Исправил обход"'), "итератор Entity")
+
+    def test_nested_ecs_group_placeholders_are_denied(self):
+        self.stage_ecs("    public void Execute()\n    {\n"
+                       "        foreach (GameEntity request in _requests)\n        {\n"
+                       "            foreach (MetaEntity __ in _boards)\n            {\n"
+                       "                Apply();\n            }\n        }\n    }")
+        self.denied(self.hook('git commit -m "Исправил обход"'), "итератор Entity")
+
+    def test_ecs_group_zero_presence_comparisons_are_denied(self):
+        for member in ("count", "Count"):
+            for operator in (">", "==", "!=", "<=", "<", ">="):
+                for comparison in (f"this._requests.{member} {operator} 0",
+                                   f"0 {operator} _requests.{member}"):
+                    with self.subTest(comparison=comparison):
+                        self.stage_ecs("    private bool CanExecute =>\n        " + comparison + ";")
+                        self.denied(self.hook('git commit -m "Исправил обход"'), "наличие ECS-группы")
+
+    def test_multiline_ecs_group_presence_and_placeholder_headers_are_denied(self):
+        bodies = (("    private bool CanExecute =>\n        _requests.count >\n        0;", "наличие ECS-группы"),
+                  ("    public void Execute()\n    {\n        foreach (GameEntity\n"
+                   "            _ in _requests)\n        {\n            Apply();\n        }\n    }", "итератор Entity"))
+        for body, reason in bodies:
+            with self.subTest(body=body):
+                self.stage_ecs(body)
+                self.denied(self.hook('git commit -m "Исправил обход"'), reason)
+
+    def test_collection_counts_and_nonzero_group_comparisons_are_allowed(self):
+        comparisons = ("_entities.Count > 0", "0 == _byId.Count", "_entities.count != 0",
+                       "_requests.count > 1", "2 == _requests.Count", "_requests.count < 10",
+                       "_requests.count > 0.5", "0.5 < _requests.Count")
+        for comparison in comparisons:
+            with self.subTest(comparison=comparison):
+                self.stage_ecs("    private bool CanExecute =>\n        " + comparison + ";")
+                self.commit_allowed(self.hook('git commit -m "Исправил обход"'))
+
+    def test_numeric_placeholders_lambdas_and_tuple_discards_are_allowed(self):
+        self.stage_ecs("    public void Execute()\n    {\n"
+                       "        foreach (int _ in _numbers)\n        {\n"
+                       "            Apply();\n        }\n"
+                       "        foreach ((GameEntity coin, int _) in _pairs)\n        {\n"
+                       "            Handle(coin);\n        }\n"
+                       "        Handle(_requests.Select(_ => true));\n"
+                       "        (GameEntity coin, _) = ReadPair();\n    }")
+        self.commit_allowed(self.hook('git commit -m "Исправил обход"'))
+
+    def test_ecs_checks_ignore_comments_and_string_literals(self):
+        self.stage_ecs('    public void Execute()\n    {\n'
+                       '        string text = "foreach (GameEntity _ in _requests) _requests.count > 0";\n'
+                       '        string escaped = "\\\" _requests.Count == 0 \\\"";\n'
+                       '        string verbatim = @"""quoted"" _requests.count != 0";\n'
+                       '        string multiline = @"\n_requests.count > 0\n";\n'
+                       '        string raw = """\nforeach (var _ in _requests)\n_requests.count > 0\n""";\n'
+                       '        char quote = \'"\';\n'
+                       '        // foreach (GameEntity _ in _requests) _requests.Count == 0\n'
+                       '        /*\nforeach (MetaEntity __ in _boards)\n0 < _boards.count\n*/\n'
+                       '        Apply();\n    }')
+        self.commit_allowed(self.hook('git commit -m "Исправил обход"'))
+
+    def test_ecs_checks_do_not_infer_groups_from_comments_or_strings(self):
+        self.stage("public class VictoryDialogue\n{\n"
+                   '    private const string DECLARATION = "IGroup<GameEntity> _entities;";\n'
+                   "    // private readonly IGroup<GameEntity> _entities;\n"
+                   "    private readonly List<GameEntity> _entities;\n"
+                   "    private bool CanExecute =>\n        _entities.Count > 0;\n}\n")
+        self.commit_allowed(self.hook('git commit -m "Исправил обход"'))
+
+    def test_ecs_checks_only_block_added_violations(self):
+        source = self.stage_ecs("    public void Execute()\n    {\n"
+                                "        foreach (GameEntity _ in _requests)\n        {\n"
+                                "            Apply();\n        }\n    }\n\n"
+                                "    private bool CanExecute =>\n        _requests.count > 0;")
+        self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                 "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+                 "commit", "-qm", "Добавил старую фикстуру")
+        self.stage(source.replace("    public void Execute()", "    private int _value;\n\n    public void Execute()"))
+        self.commit_allowed(self.hook('git commit -m "Исправил поле"'))
+        self.stage(source.replace("_requests.count > 0", "_requests.Count == 0"))
+        self.denied(self.hook('git commit -m "Исправил обход"'), "наличие ECS-группы")
+
+    def test_ecs_group_declarations_are_read_from_index(self):
+        source = self.stage_ecs("    private bool CanExecute =>\n        _requests.count > 0;")
+        (self.repo / FILE).write_text(source.replace("IGroup<GameEntity>", "List<GameEntity>"))
+        self.denied(self.hook('git commit -m "Исправил обход"'), "наличие ECS-группы")
 
     def build_environment(self, body, project=True):
         if project:
