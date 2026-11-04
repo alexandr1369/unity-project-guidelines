@@ -59,13 +59,13 @@
 - Внутри тест-класса порядок публичных методов: `SetUp`/`UnitySetUp` -> тесты -> `TearDown`/`UnityTearDown`.
 
 ## PlayMode (интеграционные) тесты
-- Каноничный запуск PlayMode suite: `scripts/run_playmode_isolated.sh` (по одному тесту в отдельном Unity-процессе).
+- Каноничный запуск PlayMode suite: `scripts/run_playmode_isolated.sh --isolated --jobs=1` (по одному тесту в отдельном Unity-процессе). Один вызов скрипта без `--isolated` запускает весь набор в общем процессе и не подтверждает изолированный прогон.
 - Массовый запуск PlayMode внутри открытого Editor не считать источником истины из-за межтестового state pollution.
 - В Editor запускать PlayMode тесты точечно для локальной отладки сценария.
 - Все batch-запуски Unity тестов (`EditMode` и `PlayMode`) выполнять только при закрытом Editor на этом `projectPath`; второй Unity-инстанс на том же проекте упирается в `project lock`.
 - Все batch-запуски Unity тестов из Codex выполнять вне sandbox (`require_escalated`), потому что sandbox может ломать `Unity LicensingClient IPC` и давать ложные падения раннера.
 - `run_editmode.sh` запускает весь `EditMode` набор одним Unity batch-процессом.
-- `run_playmode_isolated.sh` даже при `--jobs=1` запускает один Unity batch-процесс на один `PlayMode` тест; отдельные project clones используются только при `--jobs>1`.
+- `run_playmode_isolated.sh --isolated --jobs=1` запускает один Unity batch-процесс на один `PlayMode` тест; отдельные project clones используются только при `--jobs>1`. При `--jobs=1` раннер работает прямо с `PROJECT_PATH`: для QA-копии явно передавать её путь в этой переменной. `SHARED_CLONE` выбирает копию только в общем режиме и не меняет проект изолированного запуска.
 - Для full-flow сценариев использовать реальные сервисы из `ProjectContext` и реальный state flow.
 - `NSubstitute` применять точечно для внешних границ (SDK/сеть/реклама), но не для ядра доменной логики, которую проверяет тест.
 - Ожидания делать через цикл по условию (`while` + условие), а не через фиксированные `WaitForSeconds`.
