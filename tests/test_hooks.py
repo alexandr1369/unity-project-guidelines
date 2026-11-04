@@ -338,6 +338,30 @@ class HookTests(unittest.TestCase):
                                 "    private int Count()\n    {\n        int count = 1;\n\n        return count;\n    }"))
         self.denied(self.hook('git commit -m "Исправил окно"'), "return")
 
+    def test_root_progress_read_and_migration_extensions_are_allowed(self):
+        declarations = ["public static ProgressData ReadFrom(this ProgressData progress, string json)",
+                        "public static void Validate(this ProgressData progress)"]
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                self.stage("public static class VictoryDialogue\n{\n    " + declaration + " { }\n}\n")
+                self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+
+    def test_progress_migration_exception_does_not_allow_other_data_extensions(self):
+        declarations = ["public static int Count(this ProgressData progress)",
+                        "public static ProgressData ReadFrom(this ProgressData progress, int value)",
+                        "public static ProgressData ReadFrom(this ProgressData progress, string json, int value)",
+                        "public static BoosterConfig ReadFrom(this BoosterConfig boostersConfig, string json)",
+                        "public static BoosterData ReadFrom(this BoosterData data, string json)",
+                        "public static void Validate(this BoosterDefinition definition)",
+                        "public static int Count(this BoosterConfig boostersConfig)",
+                        "public static int Count(this BoosterData data)",
+                        "public static int Count(this BoosterDefinition definition)",
+                        "public static int Count<T>(this BoosterData data)"]
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                self.stage("public static class VictoryDialogue\n{\n    " + declaration + " { }\n}\n")
+                self.denied(self.hook('git commit -m "Исправил окно"'), "extension на конфиг или данные")
+
     def build_environment(self, body, project=True):
         if project:
             file = self.repo / "src/game/Code.csproj"

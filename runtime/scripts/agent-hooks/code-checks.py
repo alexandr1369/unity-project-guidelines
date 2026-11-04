@@ -79,10 +79,17 @@ def return_spacing(lines, added):
 
 
 def config_extension(lines, added):
-    # OPTIONAL_ENTITAS.md: extension не заводят на конфиг и данные — это метод самого конфига.
+    # OPTIONAL_ENTITAS.md: extension не заводят на конфиг и данные; чтение/миграция корневого ProgressData — исключение ARCHITECTURE_GUIDELINES.md.
     for number in sorted(added):
-        if number <= len(lines) and re.search(r"static\s+[^(]*\(\s*this\s+\w+(Config|Data|Definition)\b", lines[number - 1]):
-            yield number, "extension на конфиг или данные: сделай методом самого конфига"
+        if number > len(lines):
+            continue
+        line = lines[number - 1]
+        if not re.search(r"static\s+[^(]*\(\s*this\s+\w+(Config|Data|Definition)\b", line):
+            continue
+        if re.search(r"\bValidate\(\s*this\s+ProgressData\b", line) or re.search(
+                r"\bReadFrom\(\s*this\s+ProgressData\s+\w+\s*,\s*string\s+\w+\s*\)", line):
+            continue
+        yield number, "extension на конфиг или данные: сделай методом самого конфига"
 
 
 def component_name(lines, added):
