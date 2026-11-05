@@ -313,7 +313,7 @@ def mono_lifecycle_order(lines, added):
 
 
 def dialogue_lifecycle_order(lines, added):
-    # CODE_STYLE.md: явный lifecycle базы идёт после DI единым блоком, до собственных методов окна.
+    # CODE_STYLE.md: lifecycle базы идёт единым блоком после DI и исходных данных диалога.
     owner = next((match for line in lines if (match := re.match(
         r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:\w+\.)*(DialogueBase|ScreenBase|BaseWindow)\b", line))), None)
     if not owner:
@@ -332,16 +332,39 @@ def dialogue_lifecycle_order(lines, added):
         overriding = "override" in method.group(2).split()
         if overriding and name not in lifecycle_names:
             continue
-        role = "lifecycle" if overriding else "construct" if name == "Construct" else "method"
+        role = "method"
+        if overriding:
+            role = "lifecycle"
+        elif name == "Construct":
+            role = "construct"
+        elif owner.group(2) == "DialogueBase" and method.group(1) == "public":
+            modifiers_and_type = method.group(2).split()
+            if modifiers_and_type[-1] == "void" and "static" not in modifiers_and_type and re.match(r"(?:Set(?!On[A-Z])|Display)[A-Z]", name):
+                arguments = text[method.end():].strip()
+                if not arguments:
+                    arguments = next((following.strip() for following in lines[number:] if following.strip()), "")
+                if arguments and not arguments.startswith(")"):
+                    role = "payload"
+
         methods.append((number, name, role))
+
     lifecycle = [(number, name) for number, name, role in methods if role == "lifecycle"]
     if not lifecycle:
         return
+
+    first_lifecycle, last_lifecycle = lifecycle[0][0], lifecycle[-1][0]
+    last_construct = max((number for number, _, role in methods if role == "construct"), default=0)
     boundaries = {number for number, _ in lifecycle}
     for number, name, role in methods:
-        wrong_place = role == "construct" and number > lifecycle[0][0] or role == "method" and number < lifecycle[-1][0]
-        if wrong_place and added.intersection(boundaries | {number}):
-            yield number, f"{name} нарушает блок lifecycle: override Initialize/SubscribeUpdates/CleanUp идут после Construct, до собственных методов окна"
+        changed_lines = boundaries | {number}
+        if role == "payload":
+            wrong_place = number < last_construct or first_lifecycle < number < last_lifecycle
+            changed_lines.add(last_construct)
+        else:
+            wrong_place = role == "construct" and number > first_lifecycle or role == "method" and number < last_lifecycle
+
+        if wrong_place and added.intersection(changed_lines):
+            yield number, f"{name} нарушает блок lifecycle: Construct, исходные данные диалога, Initialize/SubscribeUpdates/CleanUp, остальные методы"
     for previous, current in zip(lifecycle, lifecycle[1:]):
         if lifecycle_names.index(previous[1]) > lifecycle_names.index(current[1]) and added.intersection({previous[0], current[0]}):
             yield current[0], "порядок lifecycle базы: Initialize, SubscribeUpdates, CleanUp"
@@ -719,6 +742,21 @@ def self_test():
         wrong.insert(4, wrong.pop(7))
         assert len(list(dialogue_lifecycle_order(wrong, {5}))) == 1, "Public method before lifecycle must fail"
         assert not list(dialogue_lifecycle_order(wrong, {2})), "Untouched declarations do not fail"
+        for payload in ("public void SetSlotIdAndPriceGems(int slotId, int priceGems) { }",
+                        "public void DisplayCompletedLevel(int completedLevel) { }"):
+            before = ordered[:4] + [f"    {payload}"] + ordered[4:]
+            assert bool(list(dialogue_lifecycle_order(before, {5}))) == (not base.endswith("DialogueBase"))
+            before_construct = ordered[:3] + [f"    {payload}"] + ordered[3:]
+            assert len(list(dialogue_lifecycle_order(before_construct, {4, 5}))) == 1, "DI precedes opening data"
+            split = ordered[:5] + [f"    {payload}"] + ordered[5:]
+            assert len(list(dialogue_lifecycle_order(split, {6}))) == 1, "Opening data does not split lifecycle"
+            after = ordered[:7] + [f"    {payload}"] + ordered[7:]
+            assert not list(dialogue_lifecycle_order(after, {8})), "Ongoing setters can follow lifecycle"
+        for method in ("public static void SetItem(int item) { }", "private void SetItem(int item) { }",
+                       "public int DisplayItem(int item) { return item; }",
+                       "public void SetOnFlowCompleted(Action callback) { }"):
+            before = ordered[:4] + [f"    {method}"] + ordered[4:]
+            assert len(list(dialogue_lifecycle_order(before, {5}))) == 1, method
         wrong = ordered[:]
         wrong.insert(5, wrong.pop(3))
         assert list(dialogue_lifecycle_order(wrong, set(range(1, len(wrong) + 1)))), "Construct comes before lifecycle"
