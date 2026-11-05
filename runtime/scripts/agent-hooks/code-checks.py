@@ -150,14 +150,41 @@ def vertical_call(lines, added):
         yield number, "аргументы вызова разложены по строкам: держи их в строке и переноси только хвост"
 
 
+def flat_boolean_predicate(lines):
+    if len(lines) < 2 or not lines[-1].endswith(";"):
+        return False
+
+    operators = [re.search(r"(&&|\|\|)$", line) for line in lines[:-1]]
+    if not all(operators) or len({operator[0] for operator in operators}) != 1:
+        return False
+
+    conditions = [line[:operator.start()].strip() for line, operator in zip(lines, operators)]
+    conditions.append(lines[-1][:-1].strip())
+    return all(
+        condition
+        and condition.count("(") == condition.count(")")
+        and condition.count("[") == condition.count("]")
+        and not re.search(r"&&|\|\||\?(?![.\[])|[;{}:]|=>|\+\+|--|(?<![!=<>])=(?!=)", condition)
+        for condition in conditions
+    )
+
+
 def multiline_expression_method(lines, added):
-    # CODE_STYLE.md, «Форматирование» и «Методы»: метод через => — только когда всё тело одна строка после =>;
-    # иначе тело метода в фигурных скобках. Свойства-условия (CanX =>) сюда не попадают.
-    for number in sorted(added):
-        if number >= len(lines):
+    # CODE_STYLE.md: многострочное тело => разрешено простому bool-предикату. Свойства проверяются отдельно.
+    signature = re.compile(r"\s*(public|private|protected|internal)\b.*\w(<[^>]*>)?\(.*\)\s*=>\s*$")
+    boolean = re.compile(r"\s*(?:(?:public|private|protected|internal|static|virtual|override|sealed|new|unsafe|partial)\s+)*bool\s+\w+")
+    for index, line in enumerate(lines[:-1]):
+        if not signature.match(line) or lines[index + 1].rstrip().endswith(";"):
             continue
-        if re.match(r"\s*(public|private|protected|internal)\b.*\w(<[^>]*>)?\(.*\)\s*=>\s*$", lines[number - 1]) and not lines[number].rstrip().endswith(";"):
-            yield number, "метод через => занимает несколько строк: перепиши телом в фигурных скобках"
+
+        end = next((position for position in range(index + 1, len(lines)) if lines[position].rstrip().endswith(";")), index + 1)
+        if not added.intersection(range(index + 1, end + 2)):
+            continue
+
+        if boolean.match(line) and flat_boolean_predicate([part.strip() for part in lines[index + 1:end + 1]]):
+            continue
+
+        yield index + 1, "многострочное тело => допустимо только простому bool-предикату: используй фигурные скобки"
 
 
 def inserted_in_list(lines, added):
@@ -669,6 +696,31 @@ def violations(cwd):
 def self_test():
     import tempfile
     from pathlib import Path
+
+    predicate = ["private bool IsUnlocked(int slotIndex, MetaEntity trayUnlock) =>",
+                 "    IsTutorialTray(slotIndex) ||",
+                 "    IsEarnedTray(slotIndex, trayUnlock) ||",
+                 "    IsActiveExtraTray(slotIndex);"]
+    assert not list(multiline_expression_method(predicate, {1, 3}))
+    predicate = ["private static bool CanBuy(Slot slot, int gems) =>",
+                 "    slot != null &&", "    slot.IsPriced &&", "    gems >= slot.Price;"]
+    assert not list(multiline_expression_method(predicate, {1, 3}))
+    for continuation in (
+        ["    IsReady() &&", "    (HasCoins() || HasGems());"],
+        ["    IsReady() &&", "    HasCoins() ||", "    HasGems();"],
+        ["    IsReady() && HasCoins() &&", "    HasGems();"],
+        ["    IsReady() &&", "    CanBuy(", "        item);"],
+        ["    IsReady() &&", "    (hasCoins = true);"],
+        ["    IsReady() &&", "    count++ > 0;"],
+        ["    (HasCoins() ||", "    HasGems());"],
+        ["    IsReady()", "        ? HasCoins()", "        : HasGems();"],
+    ):
+        assert len(list(multiline_expression_method([predicate[0], *continuation], {3}))) == 1, continuation
+    assert list(multiline_expression_method(["public int Price() =>", "    BasePrice +", "    Fee;"], {1}))
+    assert not list(multiline_expression_method(["public bool IsAvailable =>", "    IsReady() ||", "    HasCoins();"], {1}))
+    assert not list(multiline_expression_method(["public bool IsReady() =>", "    Check();"], {1}))
+    assert not list(multiline_expression_method(["public int Price() =>", "    BasePrice +", "    Fee;"], {5}))
+    print("multiline-expression-method self-test ok")
 
     for base in ("DialogueBase", "Code.Gameplay.Dialogues.UI.DialogueBase", "ScreenBase", "BaseWindow"):
         for callback in ("Awake", "OnEnable", "Start", "Update", "LateUpdate", "FixedUpdate", "OnDisable", "OnDestroy", "OnUpdate"):
