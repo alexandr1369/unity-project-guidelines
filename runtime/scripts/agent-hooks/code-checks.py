@@ -679,23 +679,63 @@ def untranslated_terms(cwd):
     return found
 
 
+def paths_equal_to_merge_base(cwd, paths, revision):
+    if not paths or not revision:
+        return set()
+
+    base = run(["git", "merge-base", "HEAD", revision], cwd).strip()
+    if not base:
+        return set()
+
+    diff = subprocess.run(["git", "--literal-pathspecs", "diff", "--cached", "--name-only",
+                           "--no-renames", "-z", base, "--", *paths], cwd=cwd, capture_output=True, text=True)
+    return set(paths) - set(diff.stdout.split("\0")) if diff.returncode == 0 else set()
+
+
+def restored_pr_base_paths(cwd, paths):
+    # Сравниваем целые записи индекса. В paths только файлы, реально отличающиеся от HEAD.
+    if not paths:
+        return set()
+
+    candidates = paths_equal_to_merge_base(cwd, paths, "refs/remotes/origin/HEAD")
+    if not candidates:
+        return set()
+
+    # По умолчанию ветка может быть частью стека, поэтому подтверждаем базу открытого PR.
+    try:
+        result = subprocess.run(["gh", "pr", "view", "--json", "baseRefOid,headRefName,state"],
+                                cwd=cwd, capture_output=True, text=True, timeout=4)
+        pr = json.loads(result.stdout) if result.returncode == 0 else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return set()
+
+    if pr.get("state") != "OPEN" or pr.get("headRefName") != run(["git", "branch", "--show-current"], cwd).strip():
+        return set()
+
+    return paths_equal_to_merge_base(cwd, candidates, pr.get("baseRefOid"))
+
+
 def violations(cwd):
-    found = []
+    found = {}
     for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
         if not path.endswith(".cs") or "/Generated/" in path:
             continue
         lines = run(["git", "show", f":{path}"], cwd).split("\n")
         added = added_lines(cwd, path)
-        for check in CHECKS:
-            found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added))
-        for check in PATH_CHECKS:
-            found.extend(f"{path}:{number}: {message}" for number, message in check(lines, added, path))
-    return found + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd)
+        messages = [f"{path}:{number}: {message}" for check in CHECKS for number, message in check(lines, added)]
+        messages.extend(f"{path}:{number}: {message}" for check in PATH_CHECKS for number, message in check(lines, added, path))
+        if messages:
+            found[path] = messages
+
+    restored = restored_pr_base_paths(cwd, found)
+    code_problems = [message for path, messages in found.items() if path not in restored for message in messages]
+    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd)
 
 
 def self_test():
     import tempfile
     from pathlib import Path
+    from unittest.mock import patch
 
     predicate = ["private bool IsUnlocked(int slotIndex, MetaEntity trayUnlock) =>",
                  "    IsTutorialTray(slotIndex) ||",
@@ -858,6 +898,55 @@ def self_test():
         git("rm", "--", owner)
         assert not duplicate_save_stage(cwd), "Moving the single owner is allowed"
     print("duplicate-save-stage self-test ok")
+
+    with tempfile.TemporaryDirectory() as cwd:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+        def commit(message):
+            git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+                "commit", "-qm", message)
+
+        def stage(path, source):
+            Path(cwd, path).write_text(source)
+            git("add", "--", path)
+
+        restored, edited = "Restored.cs", "Edited.cs"
+        before = "class Example {\n    private int Value() =>\n        1 +\n        2;\n}\n"
+        after = "class Example {\n    private int Value() =>\n        3;\n}\n"
+        git("init", "-q")
+        for path in (restored, edited):
+            stage(path, before)
+        commit("Base")
+        default = git("rev-parse", "HEAD")
+        git("update-ref", "refs/remotes/origin/main", default)
+        git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git("checkout", "-qb", "stack-base")
+        stage(restored, after)
+        commit("Stack base")
+        stacked_base = git("rev-parse", "HEAD")
+        git("checkout", "-qb", "task")
+        stage(edited, after)
+        commit("Task")
+        stage(restored, before)
+        stage(edited, before.replace("2;", "3;"))
+
+        real_run = subprocess.run
+        pr = {"baseRefOid": default, "headRefName": "task", "state": "OPEN"}
+
+        def with_pr(args, **kwargs):
+            if args[0] == "gh":
+                return subprocess.CompletedProcess(args, 0, json.dumps(pr), "")
+            return real_run(args, **kwargs)
+
+        with patch.object(subprocess, "run", side_effect=with_pr):
+            assert restored_pr_base_paths(cwd, [restored, edited]) == {restored}
+            assert any(problem.startswith(edited + ":") for problem in violations(cwd))
+            assert not any(problem.startswith(restored + ":") for problem in violations(cwd))
+            pr["baseRefOid"] = stacked_base
+            assert not restored_pr_base_paths(cwd, [restored, edited])
+            assert any(problem.startswith(restored + ":") for problem in violations(cwd))
+    print("exact-pr-base-restoration self-test ok")
 
 
 if __name__ == "__main__":
