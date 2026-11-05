@@ -543,23 +543,17 @@ def duplicate_save_stage(cwd):
 
 
 def ecs_group_usage(lines, added):
-    # OPTIONAL_ENTITAS.md: у Entity-итератора доменное имя; наличие группы проверяют обходом, не count.
+    # OPTIONAL_ENTITAS.md: у Entity-итератора доменное имя.
     source = "\n".join(lines)
     source = re.sub(r'(?P<raw>"{3,})[\s\S]*?(?P=raw)|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/',
                     lambda match: re.sub(r"[^\n]", " ", match.group()), source)
     groups = set(re.findall(r"\bIGroup\s*<\s*(?:\w+\.)*\w*Entity\s*>\s+(\w+)\b", source))
-    group_count = r"(?<![\w.])(?:this\s*\.\s*)?(\w+)\s*\.\s*(?:count|Count)\b"
-    comparison = r"(?:==|!=|<=|>=|<|>)"
     rules = (
         (r"\bforeach\s*\(\s*(?:\w+\.)*\w*Entity\s+_+\s+in\s+[^;{}]*?\)", False,
          "итератор Entity _/__/___: сохрани доменное имя, даже если сущность не читается"),
         (r"\bforeach\s*\(\s*var\s+_+\s+in\s+(?:this\s*\.\s*)?(\w+)"
          r"(?:\s*\.\s*(?:GetEntities\s*\([^()]*\)|AsEnumerable\s*\(\s*\)))?\s*\)", True,
          "итератор Entity _/__/___: сохрани доменное имя, даже если сущность не читается"),
-        (group_count + r"\s*" + comparison + r"\s*0(?![\w.])", True,
-         "наличие ECS-группы через count/Count: используй foreach с доменным именем и ранним выходом или флагом"),
-        (r"(?<![\w.])0\s*" + comparison + r"\s*" + group_count, True,
-         "наличие ECS-группы через count/Count: используй foreach с доменным именем и ранним выходом или флагом"),
     )
     for pattern, requires_group, message in rules:
         for match in re.finditer(pattern, source):
@@ -761,6 +755,14 @@ def self_test():
     assert not list(multiline_expression_method(["public bool IsReady() =>", "    Check();"], {1}))
     assert not list(multiline_expression_method(["public int Price() =>", "    BasePrice +", "    Fee;"], {5}))
     print("multiline-expression-method self-test ok")
+
+    group_usage = ["private readonly IGroup<GameEntity> _boardChangeAnimations;",
+                   "private bool HasBoardChange => _boardChangeAnimations.count > 0;",
+                   "private bool CanCollect => _boardChangeAnimations.Count == 0;",
+                   "foreach (var _ in _boardChangeAnimations) { }"]
+    assert not list(ecs_group_usage(group_usage, {2, 3})), "Pure group-existence checks are allowed"
+    assert len(list(ecs_group_usage(group_usage, {4}))) == 1, "Group iterators still require domain names"
+    print("ecs-group-usage self-test ok")
 
     for base in ("DialogueBase", "Code.Gameplay.Dialogues.UI.DialogueBase", "ScreenBase", "BaseWindow"):
         for callback in ("Awake", "OnEnable", "Start", "Update", "LateUpdate", "FixedUpdate", "OnDisable", "OnDestroy", "OnUpdate"):
