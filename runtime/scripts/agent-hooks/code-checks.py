@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 
 
 def run(args, cwd):
@@ -32,6 +33,98 @@ def added_lines(cwd, path):
     numbers = changed_lines(cwd, path, [])
     merging = merge_head(cwd)
     return numbers & changed_lines(cwd, path, [merging]) if merging else numbers
+
+
+CSHARP_TOKENS = re.compile(
+    r'(?P<comment>//[^\n]*|/\*[\s\S]*?(?:\*/|\Z))'
+    r'|(?P<raw_dollars>\$*)(?P<raw_quotes>"{3,})'
+    r'|(?P<interpolated>\$@"|@\$"|\$")'
+    r'|@"(?:""|[^"])*"|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\''
+    r'|(?P<punctuation>::|[{}()[\]:])'
+)
+
+
+def csharp_string_comments(source, start, quotes=1, braces=1, verbatim=False):
+    if quotes >= 3:
+        closing = '"' * quotes
+        opening = r"\{" + "{%d,}" % braces if braces else r"(?!)"
+        tokens = re.compile(f"{closing}|{opening}")
+    else:
+        closing = '"'
+        escape = '""' if verbatim else r"\\."
+        tokens = re.compile(escape + r'|\{\{|"|\{')
+
+    while token := tokens.search(source, start):
+        start = token.end()
+        if token[0] == closing:
+            return start
+        if token[0].startswith("{") and (quotes >= 3 or token[0] == "{"):
+            start = yield from csharp_comments(source, start, braces)
+
+    return len(source)
+
+
+def csharp_comments(source, start=0, braces=0):
+    nesting = []
+    while token := CSHARP_TOKENS.search(source, start):
+        start = token.end()
+        if token["comment"]:
+            yield token
+        elif token["raw_quotes"]:
+            start = yield from csharp_string_comments(source, start, len(token["raw_quotes"]), len(token["raw_dollars"]))
+        elif token["interpolated"]:
+            start = yield from csharp_string_comments(source, start, verbatim="@" in token[0])
+        elif braces and token["punctuation"]:
+            punctuation = token["punctuation"]
+            if punctuation in ("(", "[", "{"):
+                nesting.append(punctuation)
+            elif nesting and punctuation in (")", "]", "}"):
+                nesting.pop()
+            elif not nesting and punctuation == "}" and source.startswith("}" * braces, token.start()):
+                return token.start() + braces
+            elif not nesting and punctuation == ":":
+                end = source.find("}" * braces, start)
+                return end + braces if end != -1 else len(source)
+
+    return len(source)
+
+
+def established_comment(path, lines, number, comment):
+    line = lines[number - 1].lstrip("\ufeff").strip()
+    if comment == "// Command + G":
+        return "/Editor/" in f"/{path}" and re.fullmatch(r'\[(?:UnityEditor\.)?MenuItem\("[^"]+ %g"\)\]\s+// Command \+ G', line)
+    if comment == "// Has execution order to start before every other script":
+        return (path.endswith("/SwitchToEntrySceneInEditor.cs") and line == comment and number < len(lines)
+                and lines[number].strip() == "public class SwitchToEntrySceneInEditor : MonoBehaviour")
+    return False
+
+
+def added_production_comments(cwd, path, lines, added, previous_path):
+    if any(part in f"/{path}" for part in CODE_EXCLUDES):
+        return
+
+    source = "\n".join(lines)
+    if "//" not in source and "/*" not in source:
+        return
+    comments = [(source.count("\n", 0, token.start()) + 1, token[0]) for token in csharp_comments(source)]
+    if not comments:
+        return
+
+    def comments_in(revision, file):
+        source = run(["git", "show", f"{revision}:{file}"], cwd)
+        return Counter(token[0] for token in csharp_comments(source))
+
+    previous = comments_in("HEAD", previous_path)
+    merging = merge_head(cwd)
+    if merging:
+        previous |= comments_in(merging, path)
+
+    # Prioritise unchanged lines so an identical new copy is reported at its added location.
+    for number, comment in sorted(comments, key=lambda entry: entry[0] in added):
+        if previous[comment]:
+            previous[comment] -= 1
+        elif not established_comment(path, lines, number, comment):
+            yield number, "добавлен комментарий C#: вырази смысл именами и структурой кода или перенеси пояснение в PR"
 
 
 def executable_lines(lines, start, end):
@@ -340,11 +433,12 @@ def mono_lifecycle_order(lines, added):
 
 
 def dialogue_lifecycle_order(lines, added):
-    # CODE_STYLE.md: lifecycle базы идёт единым блоком после DI и исходных данных диалога.
+    # CODE_STYLE.md: у диалога public API отделяет инициализацию от очистки.
     owner = next((match for line in lines if (match := re.match(
         r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:\w+\.)*(DialogueBase|ScreenBase|BaseWindow)\b", line))), None)
     if not owner:
         return
+    dialogue = owner.group(2) == "DialogueBase"
     indent = len(owner.group(1)) + 4
     lifecycle_names = ("Initialize", "SubscribeUpdates", "CleanUp")
     methods = []
@@ -356,17 +450,18 @@ def dialogue_lifecycle_order(lines, added):
         if not method:
             continue
         name = method.group(3)
+        public = method.group(1) == "public"
         overriding = "override" in method.group(2).split()
-        if overriding and name not in lifecycle_names:
+        if overriding and name not in lifecycle_names and (not dialogue or not public or name.startswith("On")):
             continue
-        role = "method"
-        if overriding:
+        role = "public" if public else "method"
+        if overriding and name in lifecycle_names:
             role = "lifecycle"
         elif name == "Construct":
             role = "construct"
-        elif owner.group(2) == "DialogueBase" and method.group(1) == "public":
+        elif dialogue and public:
             modifiers_and_type = method.group(2).split()
-            if modifiers_and_type[-1] == "void" and "static" not in modifiers_and_type and re.match(r"(?:Set(?!On[A-Z])|Display)[A-Z]", name):
+            if modifiers_and_type[-1] == "void" and "static" not in modifiers_and_type and re.match(r"Set(?!On[A-Z])[A-Z]", name):
                 arguments = text[method.end():].strip()
                 if not arguments:
                     arguments = next((following.strip() for following in lines[number:] if following.strip()), "")
@@ -379,18 +474,27 @@ def dialogue_lifecycle_order(lines, added):
     if not lifecycle:
         return
 
+    if dialogue:
+        first_initialize = next((number for number, name in lifecycle if name != "CleanUp"), len(lines) + 1)
+        ranks = {"construct": 0, "public": 4, "method": 6}
+        ordered = []
+        for number, name, role in methods:
+            if role == "lifecycle":
+                rank = (2, 3, 5)[lifecycle_names.index(name)]
+            elif role == "payload":
+                rank = 1 if number < first_initialize else 4
+            else:
+                rank = ranks[role]
+            if any(previous_rank > rank and added.intersection({previous, number}) for previous, previous_rank in ordered):
+                yield number, f"{name} нарушает порядок диалога: Construct, исходные Set, Initialize/SubscribeUpdates, public API, CleanUp, вспомогательные методы"
+            ordered.append((number, rank))
+        return
+
     first_lifecycle, last_lifecycle = lifecycle[0][0], lifecycle[-1][0]
-    last_construct = max((number for number, _, role in methods if role == "construct"), default=0)
     boundaries = {number for number, _ in lifecycle}
     for number, name, role in methods:
-        changed_lines = boundaries | {number}
-        if role == "payload":
-            wrong_place = number < last_construct or first_lifecycle < number < last_lifecycle
-            changed_lines.add(last_construct)
-        else:
-            wrong_place = role == "construct" and number > first_lifecycle or role == "method" and number < last_lifecycle
-
-        if wrong_place and added.intersection(changed_lines):
+        wrong_place = role == "construct" and number > first_lifecycle or role in ("method", "public") and number < last_lifecycle
+        if wrong_place and added.intersection(boundaries | {number}):
             yield number, f"{name} нарушает блок lifecycle: Construct, исходные данные диалога, Initialize/SubscribeUpdates/CleanUp, остальные методы"
     for previous, current in zip(lifecycle, lifecycle[1:]):
         if lifecycle_names.index(previous[1]) > lifecycle_names.index(current[1]) and added.intersection({previous[0], current[0]}):
@@ -711,13 +815,22 @@ def restored_pr_base_paths(cwd, paths):
 
 def violations(cwd):
     found = {}
-    for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
+    changes = iter(run(["git", "diff", "--cached", "--name-status", "-M", "--diff-filter=AMR", "-z"], cwd).split("\0"))
+    for status in changes:
+        if not status:
+            break
+        previous_path = next(changes)
+        renamed = status.startswith("R")
+        path = next(changes) if renamed else previous_path
         if not path.endswith(".cs") or "/Generated/" in path:
             continue
         lines = run(["git", "show", f":{path}"], cwd).split("\n")
         added = added_lines(cwd, path)
-        messages = [f"{path}:{number}: {message}" for check in CHECKS for number, message in check(lines, added)]
-        messages.extend(f"{path}:{number}: {message}" for check in PATH_CHECKS for number, message in check(lines, added, path))
+        problems = list(added_production_comments(cwd, path, lines, added, previous_path))
+        if not renamed:
+            problems.extend(problem for check in CHECKS for problem in check(lines, added))
+            problems.extend(problem for check in PATH_CHECKS for problem in check(lines, added, path))
+        messages = [f"{path}:{number}: {message}" for number, message in problems]
         if messages:
             found[path] = messages
 
@@ -823,43 +936,50 @@ def self_test():
     print("mono-lifecycle-order self-test ok")
 
     for base in ("DialogueBase", "Code.Gameplay.Dialogues.UI.DialogueBase", "ScreenBase", "BaseWindow"):
+        dialogue = base.endswith("DialogueBase")
         ordered = [f"public class VictoryDialogue : {base}", "{",
                    "    public List<VideoClip> VideoClips => GetClips();",
                    "    [Inject] private void Construct() { }",
                    "    protected override void Initialize() { }",
                    "    protected override void SubscribeUpdates() { }",
                    "    protected override void CleanUp() { }",
-                   "    public void DisplayCompletedLevel() { }",
+                   "    public void DisplayCompletedLevel(int completedLevel) { }",
                    "    protected override void OnCloseButtonClick() { }", "}"]
+        if dialogue:
+            ordered[6], ordered[7] = ordered[7], ordered[6]
         assert not list(dialogue_lifecycle_order(ordered, set(range(1, len(ordered) + 1))))
         wrong = ordered[:]
-        wrong.insert(4, wrong.pop(7))
-        assert len(list(dialogue_lifecycle_order(wrong, {5}))) == 1, "Public method before lifecycle must fail"
+        wrong.insert(4, wrong.pop(6 if dialogue else 7))
+        assert list(dialogue_lifecycle_order(wrong, {5})), "Display must follow initialization"
         assert not list(dialogue_lifecycle_order(wrong, {2})), "Untouched declarations do not fail"
-        for payload in ("public void SetSlotIdAndPriceGems(int slotId, int priceGems) { }",
-                        "public void DisplayCompletedLevel(int completedLevel) { }"):
-            before = ordered[:4] + [f"    {payload}"] + ordered[4:]
-            assert bool(list(dialogue_lifecycle_order(before, {5}))) == (not base.endswith("DialogueBase"))
-            before_construct = ordered[:3] + [f"    {payload}"] + ordered[3:]
-            assert len(list(dialogue_lifecycle_order(before_construct, {4, 5}))) == 1, "DI precedes opening data"
-            split = ordered[:5] + [f"    {payload}"] + ordered[5:]
-            assert len(list(dialogue_lifecycle_order(split, {6}))) == 1, "Opening data does not split lifecycle"
-            after = ordered[:7] + [f"    {payload}"] + ordered[7:]
-            assert not list(dialogue_lifecycle_order(after, {8})), "Ongoing setters can follow lifecycle"
+        payload = "    public void SetSlotIdAndPriceGems(int slotId, int priceGems) { }"
+        before = ordered[:4] + [payload] + ordered[4:]
+        assert bool(list(dialogue_lifecycle_order(before, {5}))) == (not dialogue)
+        before_construct = ordered[:3] + [payload] + ordered[3:]
+        assert list(dialogue_lifecycle_order(before_construct, {4, 5})), "DI precedes opening data"
+        split = ordered[:5] + [payload] + ordered[5:]
+        assert list(dialogue_lifecycle_order(split, {6})), "Opening data does not split initialization"
+        api_position = 6 if dialogue else 7
+        after = ordered[:api_position] + [payload] + ordered[api_position:]
+        assert not list(dialogue_lifecycle_order(after, {api_position + 1})), "Ongoing setters follow initialization"
         for method in ("public static void SetItem(int item) { }", "private void SetItem(int item) { }",
                        "public int DisplayItem(int item) { return item; }",
                        "public void SetOnFlowCompleted(Action callback) { }"):
             before = ordered[:4] + [f"    {method}"] + ordered[4:]
-            assert len(list(dialogue_lifecycle_order(before, {5}))) == 1, method
+            assert list(dialogue_lifecycle_order(before, {5})), method
+        if dialogue:
+            hide = "    public override void Hide(bool animate) { }"
+            assert not list(dialogue_lifecycle_order(ordered[:7] + [hide] + ordered[7:], {8}))
+            assert list(dialogue_lifecycle_order(ordered[:8] + [hide] + ordered[8:], {9})), "Hide precedes CleanUp"
         wrong = ordered[:]
         wrong.insert(5, wrong.pop(3))
         assert list(dialogue_lifecycle_order(wrong, set(range(1, len(wrong) + 1)))), "Construct comes before lifecycle"
         wrong = ordered[:]
         wrong.insert(5, "    private void PlayContent() { }")
-        assert len(list(dialogue_lifecycle_order(wrong, {6}))) == 1, "Helpers do not split lifecycle"
+        assert list(dialogue_lifecycle_order(wrong, {6})), "Helpers follow cleanup"
         wrong = ordered[:]
-        wrong[4], wrong[6] = wrong[6], wrong[4]
-        assert list(dialogue_lifecycle_order(wrong, {5, 7})), "Lifecycle follows base order"
+        wrong[4], wrong[5] = wrong[5], wrong[4]
+        assert list(dialogue_lifecycle_order(wrong, {5, 6})), "Initialize precedes SubscribeUpdates"
         unrelated = ordered[:]
         unrelated[0] = "public class VictoryDialogue : OtherBase"
         unrelated.insert(4, unrelated.pop(7))

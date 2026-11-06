@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNTIME = ROOT / "runtime"
 SCRIPTS = RUNTIME / "scripts" / "agent-hooks"
 FILE = "Assets/Code/Tests/EditMode/VictoryDialogue.cs"
+PRODUCTION_FILE = "Assets/Code/Gameplay/VictoryDialogue.cs"
 VALID = "public class VictoryDialogue : DialogueBase\n{\n    protected override void Initialize() { }\n}\n"
 INVALID = VALID.replace("protected override void Initialize()", "private void OnEnable()")
 
@@ -44,9 +45,11 @@ class HookTests(unittest.TestCase):
         return subprocess.run(["git", *args], cwd=repo or self.repo, check=True,
                               capture_output=True, text=True, timeout=10).stdout
 
-    def stage(self, source):
-        (self.repo / FILE).write_text(source)
-        self.git("add", "--", FILE)
+    def stage(self, source, path=FILE):
+        file = self.repo / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(source)
+        self.git("add", "--", path)
 
     def stage_ecs(self, body):
         source = ("public class VictoryDialogue\n{\n"
@@ -95,6 +98,89 @@ class HookTests(unittest.TestCase):
         self.assertIn("dialogue-lifecycle self-test ok", result.stdout)
         self.assertIn("mono-lifecycle-order self-test ok", result.stdout)
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
+
+    def test_new_production_comments_block_commit(self):
+        comments = ("// Board уменьшит общий счётчик позже; после collapse останутся только анимации результата.", "/* Read this first. */",
+                    "/// <summary>Updates the board.</summary>", "private int _count; // Cache.")
+        for comment in comments:
+            with self.subTest(comment=comment):
+                self.stage(VALID.replace("    protected override", f"    {comment}\n    protected override"), PRODUCTION_FILE)
+                self.denied(self.hook('git commit -m "Поправил окно"'), f"{PRODUCTION_FILE}:3: добавлен комментарий C#")
+
+    def test_csharp_comment_tokens_inside_strings_are_allowed(self):
+        self.stage(VALID, PRODUCTION_FILE)
+        self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                 "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+                 "commit", "-qm", "Добавил фикстуру")
+        source = '''public class VictoryDialogue
+{
+    private string _regular = "https://example.invalid/ /* text */";
+    private string _escaped = "quote: \\" // text";
+    private string _verbatim = @"C:\\data
+/* text */ ""quoted""";
+    private string _raw = """
+// text
+/* more text */
+""";
+    private string _interpolated = $"{Format("https://example.invalid/")} /* text */";
+    private string _verbatimInterpolated = $@"{Format(@"https://example.invalid/")} // text";
+    private string _rawInterpolated = $$"""
+{{Format("https://example.invalid/")}}
+// text
+""";
+    private string _format = $"{3:http://example.invalid/}";
+    private char _quote = '"';
+}
+'''
+        self.stage(source, PRODUCTION_FILE)
+        self.commit_allowed(self.hook('git commit -m "Поправил окно"'))
+        self.stage(source.replace('Format("https://example.invalid/")', 'Format(/* comment */ "https://example.invalid/")', 1),
+                   PRODUCTION_FILE)
+        self.denied(self.hook('git commit -m "Поправил окно"'), "добавлен комментарий C#")
+
+    def test_unchanged_production_comments_remain_allowed_after_edit_or_rename(self):
+        source = VALID.replace("    protected override", "    private int _counter = 0; // Legacy comment.\n"
+                               "    /* Legacy block\n       detail */\n    protected override")
+        self.stage(source, PRODUCTION_FILE)
+        self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                 "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+                 "commit", "-qm", "Добавил старый код")
+
+        self.stage(source.replace("= 0", "= 1"), PRODUCTION_FILE)
+        self.commit_allowed(self.hook('git commit -m "Поправил окно"'))
+        self.stage(source.replace("detail */", "added detail */"), PRODUCTION_FILE)
+        self.denied(self.hook('git commit -m "Поправил окно"'), "добавлен комментарий C#")
+
+        renamed = PRODUCTION_FILE.replace("VictoryDialogue.cs", "MovedVictoryDialogue.cs")
+        self.stage(source, PRODUCTION_FILE)
+        self.git("mv", "--", PRODUCTION_FILE, renamed)
+        self.commit_allowed(self.hook('git commit -m "Поправил окно"'))
+        self.stage(source.replace("    protected override", "    // Legacy comment.\n    protected override"), renamed)
+        self.denied(self.hook('git commit -m "Поправил окно"'), "добавлен комментарий C#")
+
+    def test_only_exact_production_comment_exceptions_are_allowed(self):
+        menu = 'public class VictoryDialogue\n{\n    [MenuItem("Tools/Toggle Active State %g")] // Command + G\n}\n'
+        self.stage(menu, "Assets/Code/Editor/VictoryDialogue.cs")
+        self.commit_allowed(self.hook('git commit -m "Поправил окно"'))
+        self.stage(menu.replace("Command + G", "Command + G, explained"), "Assets/Code/Editor/VictoryDialogue.cs")
+        self.denied(self.hook('git commit -m "Поправил окно"'), "добавлен комментарий C#")
+        self.stage(menu, "Assets/Code/Editor/VictoryDialogue.cs")
+
+        loading_path = "Assets/Code/Infrastructure/Loading/SwitchToEntrySceneInEditor.cs"
+        loading = "public class SwitchToEntrySceneInEditor : MonoBehaviour\n{\n}\n"
+        self.stage(loading, loading_path)
+        self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                 "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+                 "commit", "-qm", "Добавил фикстуру")
+        execution_order = "// Has execution order to start before every other script\n"
+        self.stage(execution_order + loading, loading_path)
+        self.commit_allowed(self.hook('git commit -m "Поправил окно"'))
+        self.stage(loading.replace("\n}\n", f"\n    {execution_order}}}\n"), loading_path)
+        self.denied(self.hook('git commit -m "Поправил окно"'), "добавлен комментарий C#")
+
+    def test_arrange_act_assert_comments_in_tests_are_allowed(self):
+        self.stage(VALID.replace("    protected override", "    // Arrange\n    // Act\n    // Assert\n    protected override"))
+        self.commit_allowed(self.hook('git commit -m "Поправил тест"'))
 
     def test_unsafe_git_commands_are_denied(self):
         commands = ["git add -A", "git add --all --dry-run", 'git commit -am "Исправил окно"',
@@ -268,11 +354,15 @@ class HookTests(unittest.TestCase):
                 self.commit_allowed(self.hook('git commit -m "Исправил окно"', key=key))
 
     def test_own_method_before_base_lifecycle_is_denied_until_reordered(self):
-        public_method = "    public void DisplayCompletedLevel() { }\n"
-        self.stage(VALID.replace("    protected override", public_method + "    protected override"))
-        self.denied(self.hook('git commit -m "Исправил окно"'), "блок lifecycle")
-        self.stage(VALID.replace("\n}\n", "\n" + public_method + "}\n"))
+        public_method = "    public void DisplayCompletedLevel(int level) { }\n"
+        cleanup = "    protected override void CleanUp() { }\n"
+        initialized = VALID.replace("\n}\n", "\n" + cleanup + "}\n")
+        self.stage(initialized.replace("    protected override", public_method + "    protected override", 1))
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
+        self.stage(initialized.replace(cleanup, public_method + cleanup))
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+        self.stage(initialized.replace(cleanup, cleanup + public_method))
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
 
     def test_monobehaviour_callbacks_precede_own_lifecycle_methods(self):
         header = "public class VictoryDialogue : MonoBehaviour\n{\n"
