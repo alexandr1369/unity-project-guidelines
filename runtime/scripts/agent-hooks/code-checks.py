@@ -553,6 +553,14 @@ def matcher_clauses(text, matcher):
         yield text.count("\n", 0, match.start()) + 1, text.count("\n", 0, close) + 1, re.findall(r"\w+Matcher\.(\w+)", text[match.start():close + 1])
 
 
+def anyof_matcher(lines, added, path):
+    if any(part in f"/{path}" for part in CODE_EXCLUDES):
+        return
+    for start, end, _ in matcher_clauses("\n".join(lines), "AnyOf"):
+        if added.intersection(range(start, end + 1)):
+            yield start, "AnyOf в ручной ECS-выборке: используй матчер компонента, AllOf или NoneOf; альтернативы проверяй у владельца"
+
+
 def noneof_clauses(text):
     return matcher_clauses(text, "NoneOf")
 
@@ -672,7 +680,7 @@ def ecs_group_usage(lines, added):
 CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage)
-PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle)
+PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher)
 
 
 VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
@@ -868,6 +876,13 @@ def self_test():
     assert not list(multiline_expression_method(["public bool IsReady() =>", "    Check();"], {1}))
     assert not list(multiline_expression_method(["public int Price() =>", "    BasePrice +", "    Fee;"], {5}))
     print("multiline-expression-method self-test ok")
+
+    matcher = ["_slots = game.GetGroup(GameMatcher", "    .AnyOf(", "        GameMatcher.Animating,", "        GameMatcher.Selected));"]
+    assert len(list(anyof_matcher(matcher, {3}, "Assets/Code/SlotSystem.cs"))) == 1
+    assert not list(anyof_matcher(matcher, {1}, "Assets/Code/SlotSystem.cs"))
+    assert not list(anyof_matcher(matcher, {3}, "Assets/Code/Generated/Game/GameMatcher.cs"))
+    assert not list(anyof_matcher([line.replace("AnyOf", "AllOf") for line in matcher], {3}, "Assets/Code/SlotSystem.cs"))
+    print("anyof-matcher self-test ok")
 
     group_usage = ["private readonly IGroup<GameEntity> _boardChangeAnimations;",
                    "private bool HasBoardChange => _boardChangeAnimations.count > 0;",
