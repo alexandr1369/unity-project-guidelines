@@ -180,7 +180,7 @@ def config_extension(lines, added):
         if not re.search(r"static\s+[^(]*\(\s*this\s+\w+(Config|Data|Definition)\b", line):
             continue
         if re.search(r"\bValidate\(\s*this\s+ProgressData\b", line) or re.search(
-                r"\bReadFrom\(\s*this\s+ProgressData\s+\w+\s*,\s*string\s+\w+\s*\)", line):
+                r"\b(?:ReadFrom|PopulateFromSave)\(\s*this\s+ProgressData\s+\w+\s*,\s*string\s+\w+\s*\)", line):
             continue
         yield number, "extension на конфиг или данные: сделай методом самого конфига"
 

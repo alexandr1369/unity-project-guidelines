@@ -442,6 +442,7 @@ class HookTests(unittest.TestCase):
 
     def test_root_progress_read_and_migration_extensions_are_allowed(self):
         declarations = ["public static ProgressData ReadFrom(this ProgressData progress, string json)",
+                        "public static ProgressData PopulateFromSave(this ProgressData progress, string json)",
                         "public static void Validate(this ProgressData progress)"]
         for declaration in declarations:
             with self.subTest(declaration=declaration):
@@ -454,6 +455,8 @@ class HookTests(unittest.TestCase):
                         "public static ProgressData ReadFrom(this ProgressData progress, string json, int value)",
                         "public static BoosterConfig ReadFrom(this BoosterConfig boostersConfig, string json)",
                         "public static BoosterData ReadFrom(this BoosterData data, string json)",
+                        "public static BoosterData PopulateFromSave(this BoosterData data, string json)",
+                        "public static ProgressData PopulateFromSave(this ProgressData progress, int value)",
                         "public static void Validate(this BoosterDefinition definition)",
                         "public static int Count(this BoosterConfig boostersConfig)",
                         "public static int Count(this BoosterData data)",
