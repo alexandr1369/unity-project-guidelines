@@ -46,6 +46,7 @@ description: Применяй общие правила команды при р
 | Состояния, async, отмена, загрузка | [STATE_FLOW_AND_ASYNC.md](STATE_FLOW_AND_ASYNC.md) |
 | Тесты | [TESTING_STRATEGY.md](TESTING_STRATEGY.md) |
 | Unity UI, иерархия и именование объектов | [UI_HIERARCHY_GUIDELINES.md](UI_HIERARCHY_GUIDELINES.md) |
+| Игровая и UI-анимация, последовательность, тайминги и ввод | [ANIMATION_GUIDELINES.md](ANIMATION_GUIDELINES.md) |
 | Состав сцен | [SCENE_COMPOSITION.md](SCENE_COMPOSITION.md) |
 | Графика, шейдеры, производительность кадра на мобильных | [MOBILE_RENDERING.md](MOBILE_RENDERING.md) |
 | 3D-модель, текстуры и анимация по референсу: Blender, генерация, сверка, готовность | [REFERENCE_ART.md](REFERENCE_ART.md) |
