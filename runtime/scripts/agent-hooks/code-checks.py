@@ -432,8 +432,24 @@ def mono_lifecycle_order(lines, added):
             yield number, f"{name} перед Unity callbacks: сначала точки входа Unity, затем собственные Initialize/CleanUp и остальные методы"
 
 
+def dialogue_hide_base_first(lines, added, signature):
+    if signature >= len(lines) or lines[signature].strip() != "{":
+        return
+    end = block_body_end(lines, signature)
+    statements = [(index + 1, lines[index].strip()) for index in range(signature + 1, end)
+                  if lines[index].strip() and not lines[index].lstrip().startswith("//")]
+    for index, (number, statement) in enumerate(statements):
+        if not statement.startswith("base.Hide("):
+            continue
+        preceding = statements[:index]
+        touched = added.intersection({signature, number} | {line for line, _ in preceding})
+        if preceding and touched and all(re.fullmatch(r"[\w.?]+(?:\([^{};]*\)|\s*=\s*[^;{}]+);", step) for _, step in preceding):
+            yield number, "base.Hide вызывай первым действием: база обновляет Shown и может сразу вызвать onHidden"
+        return
+
+
 def dialogue_lifecycle_order(lines, added):
-    # CODE_STYLE.md: у диалога public API отделяет инициализацию от очистки.
+    # CODE_STYLE.md: OnShowing — часть lifecycle диалога, public API отделяет её от очистки.
     owner = next((match for line in lines if (match := re.match(
         r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:\w+\.)*(DialogueBase|ScreenBase|BaseWindow)\b", line))), None)
     if not owner:
@@ -441,6 +457,8 @@ def dialogue_lifecycle_order(lines, added):
     dialogue = owner.group(2) == "DialogueBase"
     indent = len(owner.group(1)) + 4
     lifecycle_names = ("Initialize", "SubscribeUpdates", "CleanUp")
+    if dialogue:
+        lifecycle_names = (*lifecycle_names[:2], "OnShowing", lifecycle_names[2])
     methods = []
     for number, line in enumerate(lines, 1):
         if len(line) - len(line.lstrip()) != indent:
@@ -452,6 +470,8 @@ def dialogue_lifecycle_order(lines, added):
         name = method.group(3)
         public = method.group(1) == "public"
         overriding = "override" in method.group(2).split()
+        if dialogue and overriding and name == "Hide":
+            yield from dialogue_hide_base_first(lines, added, number)
         if overriding and name not in lifecycle_names and (not dialogue or not public or name.startswith("On")):
             continue
         role = "public" if public else "method"
@@ -476,17 +496,18 @@ def dialogue_lifecycle_order(lines, added):
 
     if dialogue:
         first_initialize = next((number for number, name in lifecycle if name != "CleanUp"), len(lines) + 1)
-        ranks = {"construct": 0, "public": 4, "method": 6}
+        ranks = {"construct": 0, "public": 5, "method": 7}
+        lifecycle_ranks = {"Initialize": 2, "SubscribeUpdates": 3, "OnShowing": 4, "CleanUp": 6}
         ordered = []
         for number, name, role in methods:
             if role == "lifecycle":
-                rank = (2, 3, 5)[lifecycle_names.index(name)]
+                rank = lifecycle_ranks[name]
             elif role == "payload":
-                rank = 1 if number < first_initialize else 4
+                rank = 1 if number < first_initialize else ranks["public"]
             else:
                 rank = ranks[role]
             if any(previous_rank > rank and added.intersection({previous, number}) for previous, previous_rank in ordered):
-                yield number, f"{name} нарушает порядок диалога: Construct, исходные Set, Initialize/SubscribeUpdates, public API, CleanUp, вспомогательные методы"
+                yield number, f"{name} нарушает порядок диалога: Construct, исходные Set, Initialize/SubscribeUpdates, OnShowing, public API, CleanUp, вспомогательные методы"
             ordered.append((number, rank))
         return
 
@@ -1000,6 +1021,35 @@ def self_test():
         unrelated.insert(4, unrelated.pop(7))
         assert not list(dialogue_lifecycle_order(unrelated, set(range(1, len(unrelated) + 1))))
     print("dialogue-lifecycle-order self-test ok")
+
+    ordered = [
+        "public class VictoryDialogue : DialogueBase",
+        "{",
+        "    protected override void Initialize() { }",
+        "    protected override void OnShowing() { }",
+        "    public override void Hide(bool needCloseAnimation, Action onHidden)",
+        "    {",
+        "        base.Hide(needCloseAnimation, onHidden);",
+        "        _titleReveal?.Kill();",
+        "    }",
+        "    protected override void CleanUp() { }",
+        "    private void UpdateTitleReveal(float time) { }",
+        "    private void OnVideoFrameReady(VideoPlayer player, long frame) { }",
+        "    protected override void OnCloseButtonClick() { }",
+        "}",
+    ]
+    assert not list(dialogue_lifecycle_order(ordered, set(range(1, len(ordered) + 1))))
+    late_showing = ordered[:]
+    late_showing.insert(-1, late_showing.pop(3))
+    assert len(list(dialogue_lifecycle_order(late_showing, {13}))) == 1, "OnShowing belongs with lifecycle"
+    assert not list(dialogue_lifecycle_order(late_showing, {2})), "Untouched override placement stays out of scope"
+    late_hide = ordered[:]
+    late_hide[6], late_hide[7] = late_hide[7], late_hide[6]
+    assert len(list(dialogue_lifecycle_order(late_hide, {7}))) == 1, "Local callbacks run after base.Hide"
+    assert not list(dialogue_lifecycle_order(late_hide, {10})), "Untouched Hide body stays out of scope"
+    ordered_steps = late_hide[:6] + ["        foreach (DebugStepper stepper in Steppers())", "            stepper.StopRepeat();"] + late_hide[7:]
+    assert not list(dialogue_lifecycle_order(ordered_steps, set(range(1, len(ordered_steps) + 1)))), "Preceding control flow requires manual review"
+    print("dialogue-showing-and-hide self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):
