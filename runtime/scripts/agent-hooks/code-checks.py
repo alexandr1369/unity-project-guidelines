@@ -449,7 +449,7 @@ def dialogue_hide_base_first(lines, added, signature):
 
 
 def dialogue_lifecycle_order(lines, added):
-    # CODE_STYLE.md: OnShowing — часть lifecycle диалога, public API отделяет её от очистки.
+    # CODE_STYLE.md: у диалога public API отделяет инициализацию от очистки.
     owner = next((match for line in lines if (match := re.match(
         r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:\w+\.)*(DialogueBase|ScreenBase|BaseWindow)\b", line))), None)
     if not owner:
@@ -457,8 +457,6 @@ def dialogue_lifecycle_order(lines, added):
     dialogue = owner.group(2) == "DialogueBase"
     indent = len(owner.group(1)) + 4
     lifecycle_names = ("Initialize", "SubscribeUpdates", "CleanUp")
-    if dialogue:
-        lifecycle_names = (*lifecycle_names[:2], "OnShowing", lifecycle_names[2])
     methods = []
     for number, line in enumerate(lines, 1):
         if len(line) - len(line.lstrip()) != indent:
@@ -496,18 +494,17 @@ def dialogue_lifecycle_order(lines, added):
 
     if dialogue:
         first_initialize = next((number for number, name in lifecycle if name != "CleanUp"), len(lines) + 1)
-        ranks = {"construct": 0, "public": 5, "method": 7}
-        lifecycle_ranks = {"Initialize": 2, "SubscribeUpdates": 3, "OnShowing": 4, "CleanUp": 6}
+        ranks = {"construct": 0, "public": 4, "method": 6}
         ordered = []
         for number, name, role in methods:
             if role == "lifecycle":
-                rank = lifecycle_ranks[name]
+                rank = (2, 3, 5)[lifecycle_names.index(name)]
             elif role == "payload":
-                rank = 1 if number < first_initialize else ranks["public"]
+                rank = 1 if number < first_initialize else 4
             else:
                 rank = ranks[role]
             if any(previous_rank > rank and added.intersection({previous, number}) for previous, previous_rank in ordered):
-                yield number, f"{name} нарушает порядок диалога: Construct, исходные Set, Initialize/SubscribeUpdates, OnShowing, public API, CleanUp, вспомогательные методы"
+                yield number, f"{name} нарушает порядок диалога: Construct, исходные Set, Initialize/SubscribeUpdates, public API, CleanUp, вспомогательные методы"
             ordered.append((number, rank))
         return
 
@@ -1026,7 +1023,6 @@ def self_test():
         "public class VictoryDialogue : DialogueBase",
         "{",
         "    protected override void Initialize() { }",
-        "    protected override void OnShowing() { }",
         "    public override void Hide(bool needCloseAnimation, Action onHidden)",
         "    {",
         "        base.Hide(needCloseAnimation, onHidden);",
@@ -1039,17 +1035,13 @@ def self_test():
         "}",
     ]
     assert not list(dialogue_lifecycle_order(ordered, set(range(1, len(ordered) + 1))))
-    late_showing = ordered[:]
-    late_showing.insert(-1, late_showing.pop(3))
-    assert len(list(dialogue_lifecycle_order(late_showing, {13}))) == 1, "OnShowing belongs with lifecycle"
-    assert not list(dialogue_lifecycle_order(late_showing, {2})), "Untouched override placement stays out of scope"
     late_hide = ordered[:]
-    late_hide[6], late_hide[7] = late_hide[7], late_hide[6]
-    assert len(list(dialogue_lifecycle_order(late_hide, {7}))) == 1, "Local callbacks run after base.Hide"
-    assert not list(dialogue_lifecycle_order(late_hide, {10})), "Untouched Hide body stays out of scope"
-    ordered_steps = late_hide[:6] + ["        foreach (DebugStepper stepper in Steppers())", "            stepper.StopRepeat();"] + late_hide[7:]
+    late_hide[5], late_hide[6] = late_hide[6], late_hide[5]
+    assert len(list(dialogue_lifecycle_order(late_hide, {6}))) == 1, "Local callbacks run after base.Hide"
+    assert not list(dialogue_lifecycle_order(late_hide, {9})), "Untouched Hide body stays out of scope"
+    ordered_steps = late_hide[:5] + ["        foreach (DebugStepper stepper in Steppers())", "            stepper.StopRepeat();"] + late_hide[6:]
     assert not list(dialogue_lifecycle_order(ordered_steps, set(range(1, len(ordered_steps) + 1)))), "Preceding control flow requires manual review"
-    print("dialogue-showing-and-hide self-test ok")
+    print("dialogue-hide-base-first self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):
