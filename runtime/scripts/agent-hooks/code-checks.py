@@ -401,14 +401,19 @@ def dialogue_lifecycle(lines, added):
 
 
 def mono_lifecycle_order(lines, added):
-    # CODE_STYLE.md: точки входа Unity стоят перед собственными методами MonoBehaviour, включая Initialize/CleanUp.
-    owner = next((match for line in lines if (match := re.match(
-        r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:UnityEngine\.)?MonoBehaviour\b", line))), None)
-    if not owner:
+    # CODE_STYLE.md: Construct, свой жизненный цикл, колбэки Unity, остальные методы.
+    owner = next(((number, match) for number, line in enumerate(lines, 1) if (match := re.match(
+        r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+(\w+)\s*:\s*(?:UnityEngine\.)?MonoBehaviour\b", line))), None)
+    if owner is None:
         return
-    indent = len(owner.group(1)) + 4
-    callbacks, own_methods = [], []
-    for number, line in enumerate(lines, 1):
+
+    owner_line, declaration = owner
+    indent = len(declaration.group(1)) + 4
+    lifecycle = {"Construct": 0, "Initialize": 1, "SubscribeUpdates": 2, "CleanUp": 3, "Dispose": 3, "Unsubscribe": 3}
+    methods = []
+    for number, line in enumerate(lines[owner_line:], owner_line + 1):
+        if line.rstrip() == declaration.group(1) + "}":
+            break
         if len(line) - len(line.lstrip()) != indent:
             continue
         text = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
@@ -416,20 +421,24 @@ def mono_lifecycle_order(lines, added):
         if not method:
             continue
         name = method.group(1)
-        if name == "Construct":
+        if name == declaration.group(2):
+            continue
+        if name in lifecycle and "static" not in text[:method.start(1)].split():
+            methods.append((number, name, lifecycle[name]))
             continue
         callback = re.match(r"\s*(?:(?:public|protected|internal|private|virtual|override|sealed|async)\s+)*(?:void|(?:System\.Collections\.)?IEnumerator)\s+"
                             r"(?:(?:Awake|OnEnable|Start|FixedUpdate|Update|LateUpdate|OnDisable|OnDestroy|Reset|OnValidate|OnTransformParentChanged|OnTransformChildrenChanged|OnRectTransformDimensionsChange|OnApplicationQuit)\s*\(\s*\)"
                             r"|(?:OnApplicationFocus|OnApplicationPause)\s*\(\s*bool\s+\w+\s*\))", text)
         if callback:
-            callbacks.append(number)
+            methods.append((number, name, 4))
         elif not re.match(r"On[A-Z]", name):
-            own_methods.append((number, name))
-    if not callbacks:
-        return
-    for number, name in own_methods:
-        if number < callbacks[-1] and added.intersection(set(callbacks) | {number}):
-            yield number, f"{name} перед Unity callbacks: сначала точки входа Unity, затем собственные Initialize/CleanUp и остальные методы"
+            methods.append((number, name, 5))
+
+    for index, (number, name, order) in enumerate(methods):
+        for prior_number, prior_name, prior_order in methods[:index]:
+            if prior_order > order and (number in added or prior_number in added):
+                yield number, f"порядок MonoBehaviour: {name} ставь перед {prior_name} (Construct → Initialize/SubscribeUpdates/CleanUp → колбэки Unity → остальные методы)"
+                break
 
 
 def dialogue_hide_base_first(lines, added, signature):
@@ -932,39 +941,48 @@ def self_test():
         ordered = [f"public class BoardHUD : {base}", "{",
                    "    public int Count => 1;",
                    "    [Inject] private void Construct() { }",
+                   "    public void Initialize() { }",
+                   "    private void SubscribeUpdates() { }",
+                   "    public void CleanUp() { }",
                    "    private void Start() { Initialize(); }",
                    "    private void OnDestroy() { CleanUp(); }",
-                   "    public void Initialize() { }",
-                   "    public void CleanUp() { }", "}"]
+                   "    public void Display() { }", "}"]
         assert not list(mono_lifecycle_order(ordered, set(range(1, len(ordered) + 1))))
         wrong = ordered[:]
-        wrong.insert(4, wrong.pop(6))
-        assert len(list(mono_lifecycle_order(wrong, {5}))) == 1, "Initialize must not precede Unity entry points"
-        assert len(list(mono_lifecycle_order(wrong, {6}))) == 1, "A new Unity callback checks earlier method declarations"
+        wrong.insert(4, wrong.pop(7))
+        assert list(mono_lifecycle_order(wrong, {5})), "New Start must follow the lifecycle block"
+        assert list(mono_lifecycle_order(wrong, {6})), "New Initialize must precede Start"
         assert not list(mono_lifecycle_order(wrong, {2})), "Untouched legacy declarations do not fail"
         wrong[0] = "public class BoardService"
         assert not list(mono_lifecycle_order(wrong, set(range(1, len(wrong) + 1)))), "Services are not Unity objects"
-        ordered[4] = "    private void Start(int count) { }"
-        assert list(mono_lifecycle_order(ordered, {5})), "An overload with arguments is an own method, not a Unity callback"
-        ordered[4] = "    private static void Start() { }"
-        assert list(mono_lifecycle_order(ordered, {5})), "Static methods are not Unity callbacks"
+        wrong = ordered[:]
+        wrong[5], wrong[6] = wrong[6], wrong[5]
+        assert list(mono_lifecycle_order(wrong, {6})), "SubscribeUpdates precedes CleanUp"
+        wrong = ordered[:]
+        wrong[3], wrong[4] = wrong[4], wrong[3]
+        assert list(mono_lifecycle_order(wrong, {5})), "Construct precedes Initialize"
+        ordered[7] = "    private void Start(int count) { }"
+        assert list(mono_lifecycle_order(ordered, {8})), "An overload with arguments is an own method, not a Unity callback"
+        ordered[7] = "    private static void Start() { }"
+        assert list(mono_lifecycle_order(ordered, {8})), "Static methods are not Unity callbacks"
     layout = ["public class RectScaleFitter : MonoBehaviour", "{",
               "    private void Reset() { }", "    private void OnValidate() { }",
               "    private void OnTransformParentChanged() { }", "    private void OnRectTransformDimensionsChange() { }",
               "    private void LateUpdate() { Apply(); }", "    private void Apply() { }", "}"]
     assert not list(mono_lifecycle_order(layout, set(range(1, len(layout) + 1)))), "Layout callbacks stay in the Unity block"
     application = ["public class ApplicationProvider : MonoBehaviour", "{",
+                   "    public void Initialize() { }",
                    "    private void OnApplicationPause(bool paused) { }",
                    "    private void OnApplicationFocus(bool focused) { }",
-                   "    private void OnDestroy() { }", "    public void Initialize() { }", "}"]
+                   "    private void OnDestroy() { }", "}"]
     assert not list(mono_lifecycle_order(application, set(range(1, len(application) + 1))))
     unknown_callbacks = ["public class BoardHUD : MonoBehaviour", "{",
                          "    private void Construct() { }",
+                         "    public void Initialize() { }", "    public void CleanUp() { }",
                          "    private void OnCollisionEnter(Collision collision) { }",
                          "    private void OnDrawGizmos() { }",
                          "    private void Start() { Initialize(); }",
-                         "    private void OnDestroy() { CleanUp(); }",
-                         "    public void Initialize() { }", "    public void CleanUp() { }", "}"]
+                         "    private void OnDestroy() { CleanUp(); }", "}"]
     assert not list(mono_lifecycle_order(unknown_callbacks, set(range(1, len(unknown_callbacks) + 1)))), "Unknown On-handlers are not evidence of an own method before Unity callbacks"
     print("mono-lifecycle-order self-test ok")
 

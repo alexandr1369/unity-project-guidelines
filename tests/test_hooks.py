@@ -364,15 +364,17 @@ class HookTests(unittest.TestCase):
         self.stage(initialized.replace(cleanup, cleanup + public_method))
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
 
-    def test_monobehaviour_callbacks_precede_own_lifecycle_methods(self):
+    def test_monobehaviour_lifecycle_methods_precede_unity_callbacks(self):
         header = "public class VictoryDialogue : MonoBehaviour\n{\n"
         construct = "    private void Construct() { }\n"
         initialize = "    public void Initialize() { }\n"
         callbacks = "    private void Start() { Initialize(); }\n    private void OnDestroy() { CleanUp(); }\n"
         cleanup = "    public void CleanUp() { }\n"
         self.stage(header + construct + initialize + callbacks + cleanup + "}\n")
-        self.denied(self.hook('git commit -m "Исправил окно"'), "перед Unity callbacks")
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
         self.stage(header + construct + callbacks + initialize + cleanup + "}\n")
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
+        self.stage(header + construct + initialize + cleanup + callbacks + "}\n")
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
     def test_service_method_names_do_not_make_them_unity_callbacks(self):
@@ -386,12 +388,12 @@ class HookTests(unittest.TestCase):
     def test_unknown_unity_on_messages_do_not_cause_order_denial(self):
         source = ("public class VictoryDialogue : MonoBehaviour\n{\n"
                   "    private void Construct() { }\n"
+                  "    public void Initialize() { }\n"
+                  "    public void CleanUp() { }\n"
                   "    private void OnCollisionEnter(Collision collision) { }\n"
                   "    private void OnDrawGizmos() { }\n"
                   "    private void Start() { Initialize(); }\n"
-                  "    private void OnDestroy() { CleanUp(); }\n"
-                  "    public void Initialize() { }\n"
-                  "    public void CleanUp() { }\n}\n")
+                  "    private void OnDestroy() { CleanUp(); }\n}\n")
         self.stage(source)
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
