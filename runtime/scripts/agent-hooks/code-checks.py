@@ -417,7 +417,7 @@ def mono_lifecycle_order(lines, added):
         if len(line) - len(line.lstrip()) != indent:
             continue
         text = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
-        method = re.match(r"\s*(?:(?:public|protected|internal|private|static|virtual|override|sealed|async)\s+)*[\w.<>,?\[\]]+\s+(\w+)(?:<[^>()]*>)?\s*\(", text)
+        method = re.match(r"\s*(?:(?:public|protected|internal|private|static|virtual|override|sealed|async)\s+)*[\w.<>,?\[\]]+\s+(?:\w+\.)*(\w+)(?:<[^>()]*>)?\s*\(", text)
         if not method:
             continue
         name = method.group(1)
@@ -431,7 +431,7 @@ def mono_lifecycle_order(lines, added):
                             r"|(?:OnApplicationFocus|OnApplicationPause)\s*\(\s*bool\s+\w+\s*\))", text)
         if callback:
             methods.append((number, name, 4))
-        elif not re.match(r"On[A-Z]", name):
+        elif not re.match(r"On[A-Z]|Set(?!On[A-Z])[A-Z]", name):
             methods.append((number, name, 5))
 
     for index, (number, name, order) in enumerate(methods):
@@ -976,6 +976,11 @@ def self_test():
                    "    private void OnApplicationFocus(bool focused) { }",
                    "    private void OnDestroy() { }", "}"]
     assert not list(mono_lifecycle_order(application, set(range(1, len(application) + 1))))
+    disposal = ["public class Board : MonoBehaviour, IDisposable", "{",
+                "    void IDisposable.Dispose() { }", "    private void OnDestroy() { }", "}"]
+    assert not list(mono_lifecycle_order(disposal, {3, 4})), "Explicit Dispose belongs to the cleanup block"
+    disposal[2], disposal[3] = disposal[3], disposal[2]
+    assert list(mono_lifecycle_order(disposal, {3, 4})), "Explicit Dispose precedes Unity callbacks"
     unknown_callbacks = ["public class BoardHUD : MonoBehaviour", "{",
                          "    private void Construct() { }",
                          "    public void Initialize() { }", "    public void CleanUp() { }",

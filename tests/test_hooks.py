@@ -374,7 +374,8 @@ class HookTests(unittest.TestCase):
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
         self.stage(header + construct + callbacks + initialize + cleanup + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
-        self.stage(header + construct + initialize + cleanup + callbacks + "}\n")
+        setter = "    public void SetHUDRoot(Transform root) { }\n"
+        self.stage(header + construct + setter + initialize + cleanup + callbacks + "}\n")
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
     def test_service_method_names_do_not_make_them_unity_callbacks(self):
