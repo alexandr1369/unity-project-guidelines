@@ -360,8 +360,21 @@ class HookTests(unittest.TestCase):
         self.stage(initialized.replace("    protected override", public_method + "    protected override", 1))
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
         self.stage(initialized.replace(cleanup, public_method + cleanup))
-        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
         self.stage(initialized.replace(cleanup, cleanup + public_method))
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+
+    def test_dialogue_contract_lifecycle_stays_together_before_play(self):
+        header = "public class RerollDialogue : DialogueBase, IDisposable, IPointerDownHandler\n{\n"
+        initialize = "    public void Initialize() { }\n"
+        cleanup = "    public void CleanUp() { }\n    void IDisposable.Dispose() { }\n"
+        contract = "    void IPointerDownHandler.OnPointerDown(PointerEventData eventData) { }\n"
+        play = "    public void Play(Action onComplete) { }\n"
+        self.stage(header + initialize + play + cleanup + "}\n")
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
+        self.stage(header + initialize + cleanup + contract + play + "}\n")
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+        self.stage(header + initialize + cleanup + play + contract + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
 
     def test_monobehaviour_lifecycle_methods_precede_unity_callbacks(self):

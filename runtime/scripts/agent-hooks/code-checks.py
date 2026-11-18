@@ -458,42 +458,35 @@ def dialogue_hide_base_first(lines, added, signature):
 
 
 def dialogue_lifecycle_order(lines, added):
-    # CODE_STYLE.md: у диалога public API отделяет инициализацию от очистки.
+    # CODE_STYLE.md: lifecycle базы или интерфейса остаётся одной группой перед API окна.
     owner = next((match for line in lines if (match := re.match(
         r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:\w+\.)*(DialogueBase|ScreenBase|BaseWindow)\b", line))), None)
     if not owner:
         return
     dialogue = owner.group(2) == "DialogueBase"
     indent = len(owner.group(1)) + 4
-    lifecycle_names = ("Initialize", "SubscribeUpdates", "CleanUp")
+    lifecycle_order = {"Initialize": 0, "SubscribeUpdates": 1, "CleanUp": 2, "Dispose": 2, "Unsubscribe": 2}
     methods = []
     for number, line in enumerate(lines, 1):
         if len(line) - len(line.lstrip()) != indent:
             continue
         text = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
-        method = re.match(r"\s*(public|protected|internal|private)\s+([^=;{}()]+\s+)(\w+)(?:<[^>()]*>)?\s*\(", text)
+        method = re.match(r"\s*(?:(?:public|protected|internal|private|static|virtual|override|sealed|async)\s+)*[\w.<>,?\[\]]+\s+(?P<interface>(?:\w+\.)*)(?P<name>\w+)(?:<[^>()]*>)?\s*\(", text)
         if not method:
             continue
-        name = method.group(3)
-        public = method.group(1) == "public"
-        overriding = "override" in method.group(2).split()
+        name = method.group("name")
+        modifiers = text[:method.start("interface")].split()
+        public = "public" in modifiers
+        overriding = "override" in modifiers
         if dialogue and overriding and name == "Hide":
             yield from dialogue_hide_base_first(lines, added, number)
-        if overriding and name not in lifecycle_names and (not dialogue or not public or name.startswith("On")):
+        if overriding and name not in lifecycle_order and (not dialogue or not public or name.startswith("On")):
             continue
-        role = "public" if public else "method"
-        if overriding and name in lifecycle_names:
+        role = "interface" if method.group("interface") else "public" if public else "method"
+        if name in lifecycle_order and "static" not in modifiers:
             role = "lifecycle"
         elif name == "Construct":
             role = "construct"
-        elif dialogue and public:
-            modifiers_and_type = method.group(2).split()
-            if modifiers_and_type[-1] == "void" and "static" not in modifiers_and_type and re.match(r"Set(?!On[A-Z])[A-Z]", name):
-                arguments = text[method.end():].strip()
-                if not arguments:
-                    arguments = next((following.strip() for following in lines[number:] if following.strip()), "")
-                if arguments and not arguments.startswith(")"):
-                    role = "payload"
 
         methods.append((number, name, role))
 
@@ -501,31 +494,13 @@ def dialogue_lifecycle_order(lines, added):
     if not lifecycle:
         return
 
-    if dialogue:
-        first_initialize = next((number for number, name in lifecycle if name != "CleanUp"), len(lines) + 1)
-        ranks = {"construct": 0, "public": 4, "method": 6}
-        ordered = []
-        for number, name, role in methods:
-            if role == "lifecycle":
-                rank = (2, 3, 5)[lifecycle_names.index(name)]
-            elif role == "payload":
-                rank = 1 if number < first_initialize else 4
-            else:
-                rank = ranks[role]
-            if any(previous_rank > rank and added.intersection({previous, number}) for previous, previous_rank in ordered):
-                yield number, f"{name} нарушает порядок диалога: Construct, исходные Set, Initialize/SubscribeUpdates, public API, CleanUp, вспомогательные методы"
-            ordered.append((number, rank))
-        return
-
-    first_lifecycle, last_lifecycle = lifecycle[0][0], lifecycle[-1][0]
-    boundaries = {number for number, _ in lifecycle}
+    ranks = {"construct": 0, "interface": 4, "public": 5 if dialogue else 4, "method": 6 if dialogue else 4}
+    ordered = []
     for number, name, role in methods:
-        wrong_place = role == "construct" and number > first_lifecycle or role in ("method", "public") and number < last_lifecycle
-        if wrong_place and added.intersection(boundaries | {number}):
-            yield number, f"{name} нарушает блок lifecycle: Construct, исходные данные диалога, Initialize/SubscribeUpdates/CleanUp, остальные методы"
-    for previous, current in zip(lifecycle, lifecycle[1:]):
-        if lifecycle_names.index(previous[1]) > lifecycle_names.index(current[1]) and added.intersection({previous[0], current[0]}):
-            yield current[0], "порядок lifecycle базы: Initialize, SubscribeUpdates, CleanUp"
+        rank = lifecycle_order[name] + 1 if role == "lifecycle" else ranks[role]
+        if any(previous_rank > rank and added.intersection({previous, number}) for previous, previous_rank in ordered):
+            yield number, f"{name} нарушает порядок диалога: Construct, Initialize/SubscribeUpdates/CleanUp, остальные методы"
+        ordered.append((number, rank))
 
 
 def condition_operands(condition):
@@ -1001,23 +976,21 @@ def self_test():
                    "    protected override void CleanUp() { }",
                    "    public void DisplayCompletedLevel(int completedLevel) { }",
                    "    protected override void OnCloseButtonClick() { }", "}"]
-        if dialogue:
-            ordered[6], ordered[7] = ordered[7], ordered[6]
         assert not list(dialogue_lifecycle_order(ordered, set(range(1, len(ordered) + 1))))
         wrong = ordered[:]
-        wrong.insert(4, wrong.pop(6 if dialogue else 7))
-        assert list(dialogue_lifecycle_order(wrong, {5})), "Display must follow initialization"
+        wrong.insert(4, wrong.pop(7))
+        assert list(dialogue_lifecycle_order(wrong, {5})), "Display must follow cleanup"
         assert not list(dialogue_lifecycle_order(wrong, {2})), "Untouched declarations do not fail"
         payload = "    public void SetSlotIdAndPriceGems(int slotId, int priceGems) { }"
         before = ordered[:4] + [payload] + ordered[4:]
-        assert bool(list(dialogue_lifecycle_order(before, {5}))) == (not dialogue)
+        assert list(dialogue_lifecycle_order(before, {5})), "Opening data follows cleanup"
         before_construct = ordered[:3] + [payload] + ordered[3:]
         assert list(dialogue_lifecycle_order(before_construct, {4, 5})), "DI precedes opening data"
         split = ordered[:5] + [payload] + ordered[5:]
         assert list(dialogue_lifecycle_order(split, {6})), "Opening data does not split initialization"
-        api_position = 6 if dialogue else 7
+        api_position = 7
         after = ordered[:api_position] + [payload] + ordered[api_position:]
-        assert not list(dialogue_lifecycle_order(after, {api_position + 1})), "Ongoing setters follow initialization"
+        assert not list(dialogue_lifecycle_order(after, {api_position + 1})), "Ongoing setters follow cleanup"
         for method in ("public static void SetItem(int item) { }", "private void SetItem(int item) { }",
                        "public int DisplayItem(int item) { return item; }",
                        "public void SetOnFlowCompleted(Action callback) { }"):
@@ -1026,7 +999,7 @@ def self_test():
         if dialogue:
             hide = "    public override void Hide(bool animate) { }"
             assert not list(dialogue_lifecycle_order(ordered[:7] + [hide] + ordered[7:], {8}))
-            assert list(dialogue_lifecycle_order(ordered[:8] + [hide] + ordered[8:], {9})), "Hide precedes CleanUp"
+            assert list(dialogue_lifecycle_order(ordered[:6] + [hide] + ordered[6:], {7})), "Hide follows CleanUp"
         wrong = ordered[:]
         wrong.insert(5, wrong.pop(3))
         assert list(dialogue_lifecycle_order(wrong, set(range(1, len(wrong) + 1)))), "Construct comes before lifecycle"
@@ -1036,6 +1009,21 @@ def self_test():
         wrong = ordered[:]
         wrong[4], wrong[5] = wrong[5], wrong[4]
         assert list(dialogue_lifecycle_order(wrong, {5, 6})), "Initialize precedes SubscribeUpdates"
+        contract = ordered[:]
+        contract[4] = "    public void Initialize() { }"
+        contract[5] = "    void IWindow.SubscribeUpdates() { }"
+        contract.insert(7, "    void IDisposable.Dispose() { }")
+        contract.insert(8, "    void IPointerDownHandler.OnPointerDown(PointerEventData eventData) { }")
+        assert not list(dialogue_lifecycle_order(contract, set(range(1, len(contract) + 1)))), "Interface lifecycle methods stay in the lifecycle block"
+        late_contract = contract[:]
+        late_contract[8], late_contract[9] = late_contract[9], late_contract[8]
+        if dialogue:
+            assert list(dialogue_lifecycle_order(late_contract, {9, 10})), "Interface methods precede public API"
+        contract.insert(6, "    public void Play(Action onComplete) { }")
+        assert list(dialogue_lifecycle_order(contract, {7})), "Play does not split interface lifecycle"
+        static = ordered[:]
+        static.insert(6, "    public static void Initialize() { }")
+        assert list(dialogue_lifecycle_order(static, {7})), "Static methods are not lifecycle implementations"
         unrelated = ordered[:]
         unrelated[0] = "public class VictoryDialogue : OtherBase"
         unrelated.insert(4, unrelated.pop(7))
@@ -1046,12 +1034,12 @@ def self_test():
         "public class VictoryDialogue : DialogueBase",
         "{",
         "    protected override void Initialize() { }",
+        "    protected override void CleanUp() { }",
         "    public override void Hide(bool needCloseAnimation, Action onHidden)",
         "    {",
         "        base.Hide(needCloseAnimation, onHidden);",
         "        _titleReveal?.Kill();",
         "    }",
-        "    protected override void CleanUp() { }",
         "    private void UpdateTitleReveal(float time) { }",
         "    private void OnVideoFrameReady(VideoPlayer player, long frame) { }",
         "    protected override void OnCloseButtonClick() { }",
@@ -1059,10 +1047,10 @@ def self_test():
     ]
     assert not list(dialogue_lifecycle_order(ordered, set(range(1, len(ordered) + 1))))
     late_hide = ordered[:]
-    late_hide[5], late_hide[6] = late_hide[6], late_hide[5]
-    assert len(list(dialogue_lifecycle_order(late_hide, {6}))) == 1, "Local callbacks run after base.Hide"
-    assert not list(dialogue_lifecycle_order(late_hide, {9})), "Untouched Hide body stays out of scope"
-    ordered_steps = late_hide[:5] + ["        foreach (DebugStepper stepper in Steppers())", "            stepper.StopRepeat();"] + late_hide[6:]
+    late_hide[6], late_hide[7] = late_hide[7], late_hide[6]
+    assert len(list(dialogue_lifecycle_order(late_hide, {7}))) == 1, "Local callbacks run after base.Hide"
+    assert not list(dialogue_lifecycle_order(late_hide, {10})), "Untouched Hide body stays out of scope"
+    ordered_steps = late_hide[:6] + ["        foreach (DebugStepper stepper in Steppers())", "            stepper.StopRepeat();"] + late_hide[7:]
     assert not list(dialogue_lifecycle_order(ordered_steps, set(range(1, len(ordered_steps) + 1)))), "Preceding control flow requires manual review"
     print("dialogue-hide-base-first self-test ok")
 
