@@ -486,6 +486,31 @@ class HookTests(unittest.TestCase):
         self.stage(source)
         self.commit_allowed(self.hook('git commit -m "Уточнил выражения"'))
 
+    def test_complete_predicates_callback_bodies_and_ternary_branches_are_allowed(self):
+        source = ("public class Example\n{\n"
+                  "    private bool IsBoardBusy =>\n"
+                  "        First ||\n        Second ||\n        Third;\n"
+                  "    private bool CanMatch()\n    {\n"
+                  "        return First &&\n            Second &&\n            Third;\n    }\n"
+                  "    public void Subscribe()\n    {\n"
+                  "        dialogue.Closed += () =>\n            OnDialogueClosed(dialogue);\n"
+                  "        ownedTrays.Sort((left, right) => left.Denomination != right.Denomination\n"
+                  "            ? right.Denomination.CompareTo(left.Denomination)\n"
+                  "            : left.Tray.CompareTo(right.Tray));\n"
+                  "    }\n}\n")
+        self.stage(source)
+        self.commit_allowed(self.hook('git commit -m "Сохранил структуру выражений"'))
+
+    def test_structural_expression_boundaries_do_not_hide_wrapped_call_arguments(self):
+        bodies = ["service.Do(first,\n            () => Finish());",
+                  "dialogue.Play(() =>\n            Apply(first,\n                second));",
+                  "ownedTrays.Sort((left, right) => left.Ready\n"
+                  "            ? Compare(first,\n                second)\n            : Other());"]
+        for body in bodies:
+            with self.subTest(body=body):
+                self.stage("public class Example\n{\n    public void Execute()\n    {\n        " + body + "\n    }\n}\n")
+                self.denied(self.hook('git commit -m "Сохранил структуру выражений"'), "физической строкой")
+
     def test_wrapping_check_preserves_delegate_declarations_and_interpolated_strings(self):
         source = ('public class Example\n{\n'
                   '    delegate void Callback(\n        int first,\n        int second);\n'

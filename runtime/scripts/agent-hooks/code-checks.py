@@ -204,6 +204,48 @@ def component_value_initializer(lines, added):
             yield number, "у поля Value компонента инициализатор: убери, значение приходит через Add/Replace"
 
 
+def top_level_expression(expression):
+    nesting, result = [], []
+    for character in expression:
+        if character in "([":
+            result.append(character if not nesting else " ")
+            nesting.append(character)
+        elif character in ")]":
+            if not nesting or nesting.pop() != {")": "(", "]": "["}[character]:
+                return None
+            result.append(character if not nesting else " ")
+        else:
+            result.append(character if not nesting or character == "\n" else " ")
+    return None if nesting else "".join(result)
+
+
+def flat_boolean_predicate(expression):
+    parts = [line.strip() for line in expression.strip().splitlines()]
+    if len(parts) < 2:
+        return False
+    operators = [re.search(r"(&&|\|\|)$", part) for part in parts[:-1]]
+    if not all(operators) or len({operator[0] for operator in operators}) != 1:
+        return False
+    operands = [part[:operator.start()].strip() for part, operator in zip(parts, operators)] + [parts[-1]]
+    for operand in operands:
+        top = top_level_expression(operand)
+        if not operand or top is None or re.search(r"&&|\|\||(?<!\?)\?(?![?.\[])|[;,{}]|=>|(?<![!=<>])=(?!=)", top):
+            return False
+    return True
+
+
+def flat_ternary(expression):
+    parts = [line.strip() for line in expression.strip().splitlines()]
+    if len(parts) != 3 or not parts[1].startswith("?") or not parts[2].startswith(":"):
+        return False
+    branches = [parts[0], parts[1][1:].strip(), parts[2][1:].strip()]
+    for index, branch in enumerate(branches):
+        top = top_level_expression(branch)
+        if not branch or top is None or re.search(r"[;,{}]", top) or index == 0 and re.search(r"(?<!\?)\?(?![?.\[])", top):
+            return False
+    return True
+
+
 def expression_wrapping(lines, added):
     # CODE_STYLE.md: обычные выражения и заголовки — одной строкой, структурная раскладка сохраняется.
     source = "\n".join(lines)
@@ -223,8 +265,8 @@ def expression_wrapping(lines, added):
                     break
         literal = source[token.start():position]
         blank = re.sub(r"[^\n]", " ", literal)
-        if "\n" in blank and not token["comment"]:
-            blank = "{" + blank[1:-1] + "}"
+        if not token["comment"]:
+            blank = "{" + blank[1:-1] + "}" if "\n" in blank else "x" + blank[1:]
         masked[token.start():position] = blank
     source = "".join(masked)
     stack, pairs = [], {}
@@ -234,6 +276,23 @@ def expression_wrapping(lines, added):
         elif character == ")" and stack:
             pairs[stack.pop()] = index
 
+    def generic_start(text, end):
+        end = len(text[:end].rstrip()) - 1
+        if end < 0 or text[end] != ">":
+            return None
+        depth = 0
+        for index in range(end, -1, -1):
+            depth += (text[index] == ">") - (text[index] == "<")
+            if depth == 0:
+                return index if re.search(r"[\w.?]+$", text[:index].rstrip()) else None
+        return None
+
+    generic_commas = set()
+    for opening in pairs:
+        start = generic_start(source, opening)
+        if start is not None:
+            generic_commas.update(index for index in range(start, opening) if source[index] == ",")
+    source = "".join(" " if index in generic_commas else character for index, character in enumerate(source))
     declarations, problems = [], []
 
     def report(start, end, message):
@@ -246,7 +305,7 @@ def expression_wrapping(lines, added):
         nesting = []
         for index in range(start, len(source)):
             character = source[index]
-            if not nesting and character in ";,}":
+            if not nesting and character in ";,})]":
                 return index
             if character in "([{":
                 nesting.append(character)
@@ -259,6 +318,35 @@ def expression_wrapping(lines, added):
         chain = builder and re.search(r"\n\s*\.\w+(?:<[^\n]+>)?\s*\(", expression)
         matcher = re.search(r"\b\w*Matcher\b[\s\S]*\.(AllOf|NoneOf|AnyOf)\s*\(", expression)
         return "{" in expression or expression.lstrip().startswith("[") or bool(chain or matcher)
+
+    expression_heads = list(re.finditer(r"(?P<assignment>(?<![=!<>])=(?!=|>))|(?P<arrow>=>)|(?P<return>\breturn\b)", source))
+    structural_breaks = set()
+
+    def mark_internal_breaks(start, end):
+        expression = source[start:end]
+        first = start + len(expression) - len(expression.lstrip())
+        last = end - len(expression) + len(expression.rstrip())
+        structural_breaks.update(index for index in range(first, last) if source[index] == "\n")
+
+    for match in expression_heads:
+        end = expression_end(match.end())
+        expression = source[match.end():end]
+        if match["arrow"]:
+            body_start = match.end() + len(expression) - len(expression.lstrip())
+            structural_breaks.update(index for index in range(match.end(), body_start) if source[index] == "\n")
+        if (match["arrow"] or match["return"]) and flat_boolean_predicate(expression) or flat_ternary(expression):
+            mark_internal_breaks(match.end(), end)
+    for opening, closing in pairs.items():
+        top = top_level_expression(source[opening + 1:closing])
+        if top is None:
+            continue
+        start = opening + 1
+        for offset in [index for index, character in enumerate(top) if character == ","] + [len(top)]:
+            end = opening + 1 + offset
+            if flat_ternary(source[start:end]):
+                mark_internal_breaks(start, end)
+            start = end + 1
+    layout = "".join(" " if index in structural_breaks else character for index, character in enumerate(source))
 
     for opening, closing in sorted(pairs.items()):
         prefix_start = source.rfind("\n", 0, len(source[:opening].rstrip())) + 1
@@ -275,14 +363,12 @@ def expression_wrapping(lines, added):
         if control:
             report(prefix_start, closing, "заголовок управления перенесён: оставь его одной физической строкой, сохрани частоту вычислений цикла")
             continue
+        if "\n" not in layout[prefix_start:closing]:
+            continue
         call_prefix = prefix.rstrip()
-        if call_prefix.endswith(">"):
-            depth = 0
-            for index in range(len(call_prefix) - 1, -1, -1):
-                depth += (call_prefix[index] == ">") - (call_prefix[index] == "<")
-                if depth == 0:
-                    call_prefix = call_prefix[:index].rstrip()
-                    break
+        generic = generic_start(call_prefix, len(call_prefix))
+        if generic is not None:
+            call_prefix = call_prefix[:generic].rstrip()
         invocation = re.search(r"([\w.?]+)\s*$", call_prefix)
         if not invocation or invocation[1] in ("catch", "using", "lock", "switch", "typeof", "nameof", "default", "return"):
             continue
@@ -292,12 +378,12 @@ def expression_wrapping(lines, added):
             continue
         report(prefix_start, closing, "аргументы вызова перенесены: обычный вызов записывай одной физической строкой независимо от ширины")
 
-    for match in re.finditer(r"(?P<assignment>(?<![=!<>])=(?!=|>))|(?P<arrow>=>)|(?P<return>\breturn\b)", source):
+    for match in expression_heads:
         if any(start < match.start() < end for start, end in declarations):
             continue
         end = expression_end(match.end())
         expression = source[match.end():end]
-        inspected = expression.strip() if match["arrow"] else expression.rstrip()
+        inspected = layout[match.end():end].strip() if match["arrow"] else layout[match.end():end].rstrip()
         if "\n" not in inspected or structural(expression):
             continue
         report(match.start(), end, "выражение перенесено: присваивание, return или выражение после => записывай одной физической строкой")
@@ -890,16 +976,23 @@ def self_test():
         ["bool prepared = TryPrepare(first,", "    second, third);"],
         ["bool prepared =", "    TryPrepare(first, second);"],
         ["bool sameRequest = request.isEnabled &&", "    request.creationIndex == creationIndex;"],
-        ["return first &&", "    second;"],
         ["return Other(first,", "    second);"],
         ["bool enabled = entity", "    .isEnabled;"],
+        ["service.Do(first,", "    () => Finish());"],
+        ["dialogue.Play(() =>", "    Apply(first,", "        second));"],
+        ["private bool IsBusy =>", "    First || Second ||", "    Third;"],
+        ["private bool IsBusy =>", "    First &&", "    Second ||", "    Third;"],
+        ["private bool IsBusy =>", "    Check(first,", "        second) ||", "    Third;"],
+        ["ownedTrays.Sort((left, right) => left.Ready", "    ? Compare(first,", "        second)", "    : Other());"],
+        ["Apply(first,", "    ready", "        ? GetReady()", "        : GetWaiting());"],
+        ["Apply(", "    ready", "        ? GetReady()", "        : GetWaiting());"],
+        ["foreach (Entity entity in Find(value =>", "    value.Ready)) { }"],
         ['Apply($"{Format(")")}",', '    second);'],
         ["service.Do<Foo<Bar>>(first,", "    second);"],
+        ["return ready", "    ? Read<Foo, Bar>(first,", "        second)", "    : Other();"],
         ["var group = game.GetGroup(GameMatcher", "    .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(first,", "        second)));"],
         ["bool ready = request.IsEnabled &&", "    request.HasCoins()", "        .Equals(true);"],
         ["var values = source", "    .Where(IsReady)", "    .ToList();"],
-        ["private bool IsBusy =>", "    First ||", "    Second;"],
-        ["private bool IsBusy() =>", "    First ||", "    Second;"],
     ]
     for sample in wrapped:
         assert list(expression_wrapping(sample, set(range(1, len(sample) + 1)))), sample
@@ -908,6 +1001,23 @@ def self_test():
         ["bool prepared = TryPrepareBoosterUse(storage, booster, needsTarget, ref requestWaitsForBoard, out int boardId, out List<BroomMove> moves);"],
         ["private bool IsBusy =>", "    First || Second;"],
         ["private bool IsBusy() =>", "    First || Second;"],
+        ["private bool IsBoardBusy =>", "    _animatingSlots.count > 0 ||", "    _selectedSlots.count > 0 ||", "    _interactActions.count > 0 ||", "    _broomRequests.count > 0;"],
+        ["private bool IsBusy() =>", "    First ||", "    Second;"],
+        ["return First &&", "    Second &&", "    Third;"],
+        ["dialogue.Closed += () =>", "    OnDialogueClosed(dialogue);"],
+        ["dialogue.Play(onComplete: () =>", "    OnDialogueClosed(dialogue));"],
+        ["ownedTrays.Sort((left, right) => left.Denomination != right.Denomination", "    ? right.Denomination.CompareTo(left.Denomination)", "    : left.Tray.CompareTo(right.Tray));"],
+        ["return ready", "    ? GetReady()", "    : GetWaiting();"],
+        ['return ready', '    ? "ready"', '    : "waiting";'],
+        ["int index = ready", "    ? GetReady()", "    : GetWaiting();"],
+        ["Apply(ready", "    ? GetReady()", "    : GetWaiting());"],
+        ["Apply(first, ready", "    ? GetReady()", "    : GetWaiting());"],
+        ["return ready", "    ? cached ?? fallback", "    : value;"],
+        ["return CanUse(allowOverride: false) &&", "    CanPay();"],
+        ["return Check(a && b) &&", "    IsReady();"],
+        ["int value = ready", "    ? Read<Foo, Bar>()", "    : Other();"],
+        ["return ready", "    ? Read<Foo, Bar>()", "    : Other();"],
+        ["Apply(ready", "    ? Read<Foo, Bar>()", "    : Other());"],
         ["private void Construct(", "    Service first,", "    Service second) { }"],
         ["[Inject] private void Construct(", "    Service first,", "    Service second) { }"],
         ["GameEntity Create(", "    Config config,", "    int count) { return null; }"],
