@@ -204,80 +204,104 @@ def component_value_initializer(lines, added):
             yield number, "у поля Value компонента инициализатор: убери, значение приходит через Add/Replace"
 
 
-def wrapped_return(lines, added):
-    # CODE_STYLE.md, «Методы»: два условия переносят, только когда строка не влезает из-за длинного обращения,
-    # и тогда обращение сначала уходит в локальную переменную. return и expression-bodied метод с двумя
-    # условиями остаются одной строкой; три и больше условий по одному на строку — норма предиката.
-    starts = set()
-    for number in sorted(added):
-        if number > len(lines) or not re.search(r"(&&|\|\||\?)\s*$", lines[number - 1]):
+def expression_wrapping(lines, added):
+    # CODE_STYLE.md: обычные выражения и заголовки — одной строкой, структурная раскладка сохраняется.
+    source = "\n".join(lines)
+
+    masked, position = list(source), 0
+    while token := CSHARP_TOKENS.search(source, position):
+        position = token.end()
+        if token["punctuation"]:
             continue
-        start = number - 1
-        while start > 0 and re.search(r"(&&|\|\||\?|=>)\s*$", lines[start - 1]):
-            start -= 1
-        head = lines[start].strip()
-        if head.startswith("return ") or re.match(r"(public|private|protected|internal)\b.*\w\(.*\)\s*=>$", head):
-            starts.add(start)
-    for start in sorted(starts):
-        end = start
-        while end + 1 < len(lines) and re.search(r"(&&|\|\||\?|=>)\s*$", lines[end]):
-            end += 1
-        wraps = sum(1 for line in lines[start:end] if re.search(r"(&&|\|\||\?)\s*$", line))
-        if wraps == 1:
-            yield start + 1, "два условия перенесены на строки: вынеси длинное обращение в локальную переменную, условие — одной строкой"
+        if token["raw_quotes"] or token["interpolated"]:
+            parser = csharp_string_comments(source, position, len(token["raw_quotes"]), len(token["raw_dollars"])) if token["raw_quotes"] else csharp_string_comments(source, position, verbatim="@" in token[0])
+            while True:
+                try:
+                    next(parser)
+                except StopIteration as completed:
+                    position = completed.value
+                    break
+        literal = source[token.start():position]
+        blank = re.sub(r"[^\n]", " ", literal)
+        if "\n" in blank and not token["comment"]:
+            blank = "{" + blank[1:-1] + "}"
+        masked[token.start():position] = blank
+    source = "".join(masked)
+    stack, pairs = [], {}
+    for index, character in enumerate(source):
+        if character == "(":
+            stack.append(index)
+        elif character == ")" and stack:
+            pairs[stack.pop()] = index
 
+    declarations, problems = [], []
 
-def vertical_call(lines, added):
-    # CODE_STYLE.md, «Методы»: в месте вызова аргументы не раскладываются по одному на строку; исключение — состав
-    # matcher-а (AllOf/AnyOf/NoneOf) и объявления сигнатур.
-    for number in sorted(added):
-        if number > len(lines):
+    def report(start, end, message):
+        first = source.count("\n", 0, start) + 1
+        last = source.count("\n", 0, end) + 1
+        if added.intersection(range(first, last + 1)) and not any(left <= end and start <= right for left, right, _ in problems):
+            problems.append((start, end, (first, message)))
+
+    def expression_end(start):
+        nesting = []
+        for index in range(start, len(source)):
+            character = source[index]
+            if not nesting and character in ";,}":
+                return index
+            if character in "([{":
+                nesting.append(character)
+            elif nesting and character in ")]}":
+                nesting.pop()
+        return len(source)
+
+    def structural(expression):
+        builder = re.match(r"\s*\(?\s*(?:Create(?:Meta|Input)?Entity\.Empty|[\w.]+\.CreateSequence|(?:DG\.Tweening\.)?(?:DOTween|DOVirtual)\.\w+|[\w.]+\.DO[A-Z]\w*)\s*\(", expression)
+        chain = builder and re.search(r"\n\s*\.\w+(?:<[^\n]+>)?\s*\(", expression)
+        matcher = re.search(r"\b\w*Matcher\b[\s\S]*\.(AllOf|NoneOf|AnyOf)\s*\(", expression)
+        return "{" in expression or expression.lstrip().startswith("[") or bool(chain or matcher)
+
+    for opening, closing in sorted(pairs.items()):
+        prefix_start = source.rfind("\n", 0, len(source[:opening].rstrip())) + 1
+        prefix = source[prefix_start:opening].strip()
+        prefix = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", prefix)
+        declaration = re.match(r"(?:(?:public|private|protected|internal|static|override|abstract|virtual|async|sealed|partial|new|delegate)\s+)+[^=;{}]*$", prefix)
+        local_declaration = re.fullmatch(r"[\w.<>,?\[\]]+\s+\w+(?:<[^>]+>)?", prefix) and prefix.split()[0] not in ("return", "await", "new", "throw", "yield", "else")
+        if (declaration and not prefix.startswith("new ") or local_declaration) and "=>" not in prefix:
+            declarations.append((opening, closing))
             continue
-        text = lines[number - 1].strip()
-        if not text.endswith("(") or re.search(r"\b(AllOf|AnyOf|NoneOf)\($", text):
+        control = re.search(r"\b(if|while|for|foreach)\s*$", prefix)
+        if "\n" not in source[prefix_start:closing]:
             continue
-        if re.match(r"(public|private|protected|internal|static|override|abstract|virtual|async|delegate)\b", text):
+        if control:
+            report(prefix_start, closing, "заголовок управления перенесён: оставь его одной физической строкой, сохрани частоту вычислений цикла")
             continue
-        if re.match(r"[\w<>\[\],.?]+\s+\w+\($", text) and not re.search(r"[=.]", text.split("(")[0].split()[-1]):
+        call_prefix = prefix.rstrip()
+        if call_prefix.endswith(">"):
+            depth = 0
+            for index in range(len(call_prefix) - 1, -1, -1):
+                depth += (call_prefix[index] == ">") - (call_prefix[index] == "<")
+                if depth == 0:
+                    call_prefix = call_prefix[:index].rstrip()
+                    break
+        invocation = re.search(r"([\w.?]+)\s*$", call_prefix)
+        if not invocation or invocation[1] in ("catch", "using", "lock", "switch", "typeof", "nameof", "default", "return"):
             continue
-        yield number, "аргументы вызова разложены по строкам: держи их в строке и переноси только хвост"
-
-
-def flat_boolean_predicate(lines):
-    if len(lines) < 2 or not lines[-1].endswith(";"):
-        return False
-
-    operators = [re.search(r"(&&|\|\|)$", line) for line in lines[:-1]]
-    if not all(operators) or len({operator[0] for operator in operators}) != 1:
-        return False
-
-    conditions = [line[:operator.start()].strip() for line, operator in zip(lines, operators)]
-    conditions.append(lines[-1][:-1].strip())
-    return all(
-        condition
-        and condition.count("(") == condition.count(")")
-        and condition.count("[") == condition.count("]")
-        and not re.search(r"&&|\|\||\?(?![.\[])|[;{}:]|=>|\+\+|--|(?<![!=<>])=(?!=)", condition)
-        for condition in conditions
-    )
-
-
-def multiline_expression_method(lines, added):
-    # CODE_STYLE.md: многострочное тело => разрешено простому bool-предикату. Свойства проверяются отдельно.
-    signature = re.compile(r"\s*(public|private|protected|internal)\b.*\w(<[^>]*>)?\(.*\)\s*=>\s*$")
-    boolean = re.compile(r"\s*(?:(?:public|private|protected|internal|static|virtual|override|sealed|new|unsafe|partial)\s+)*bool\s+\w+")
-    for index, line in enumerate(lines[:-1]):
-        if not signature.match(line) or lines[index + 1].rstrip().endswith(";"):
+        name = invocation[1].split(".")[-1]
+        expression = source[opening:closing + 1]
+        if name in ("AllOf", "NoneOf", "AnyOf") or structural(expression):
             continue
+        report(prefix_start, closing, "аргументы вызова перенесены: обычный вызов записывай одной физической строкой независимо от ширины")
 
-        end = next((position for position in range(index + 1, len(lines)) if lines[position].rstrip().endswith(";")), index + 1)
-        if not added.intersection(range(index + 1, end + 2)):
+    for match in re.finditer(r"(?P<assignment>(?<![=!<>])=(?!=|>))|(?P<arrow>=>)|(?P<return>\breturn\b)", source):
+        if any(start < match.start() < end for start, end in declarations):
             continue
-
-        if boolean.match(line) and flat_boolean_predicate([part.strip() for part in lines[index + 1:end + 1]]):
+        end = expression_end(match.end())
+        expression = source[match.end():end]
+        inspected = expression.strip() if match["arrow"] else expression.rstrip()
+        if "\n" not in inspected or structural(expression):
             continue
-
-        yield index + 1, "многострочное тело => допустимо только простому bool-предикату: используй фигурные скобки"
+        report(match.start(), end, "выражение перенесено: присваивание, return или выражение после => записывай одной физической строкой")
+    yield from (problem for _, _, problem in sorted(problems))
 
 
 def inserted_in_list(lines, added):
@@ -679,7 +703,7 @@ def ecs_group_usage(lines, added):
                 yield start, message
 
 
-CHECKS = (return_spacing, config_extension, component_name, wrapped_return, vertical_call, multiline_expression_method, request_before_save,
+CHECKS = (return_spacing, config_extension, component_name, expression_wrapping, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher)
@@ -854,30 +878,71 @@ def self_test():
     from pathlib import Path
     from unittest.mock import patch
 
-    predicate = ["private bool IsUnlocked(int slotIndex, MetaEntity trayUnlock) =>",
-                 "    IsTutorialTray(slotIndex) ||",
-                 "    IsEarnedTray(slotIndex, trayUnlock) ||",
-                 "    IsActiveExtraTray(slotIndex);"]
-    assert not list(multiline_expression_method(predicate, {1, 3}))
-    predicate = ["private static bool CanBuy(Slot slot, int gems) =>",
-                 "    slot != null &&", "    slot.IsPriced &&", "    gems >= slot.Price;"]
-    assert not list(multiline_expression_method(predicate, {1, 3}))
-    for continuation in (
-        ["    IsReady() &&", "    (HasCoins() || HasGems());"],
-        ["    IsReady() &&", "    HasCoins() ||", "    HasGems();"],
-        ["    IsReady() && HasCoins() &&", "    HasGems();"],
-        ["    IsReady() &&", "    CanBuy(", "        item);"],
-        ["    IsReady() &&", "    (hasCoins = true);"],
-        ["    IsReady() &&", "    count++ > 0;"],
-        ["    (HasCoins() ||", "    HasGems());"],
-        ["    IsReady()", "        ? HasCoins()", "        : HasGems();"],
-    ):
-        assert len(list(multiline_expression_method([predicate[0], *continuation], {3}))) == 1, continuation
-    assert list(multiline_expression_method(["public int Price() =>", "    BasePrice +", "    Fee;"], {1}))
-    assert not list(multiline_expression_method(["public bool IsAvailable =>", "    IsReady() ||", "    HasCoins();"], {1}))
-    assert not list(multiline_expression_method(["public bool IsReady() =>", "    Check();"], {1}))
-    assert not list(multiline_expression_method(["public int Price() =>", "    BasePrice +", "    Fee;"], {5}))
-    print("multiline-expression-method self-test ok")
+    wrapped = [
+        ["if (first &&", "    second)", "    return;"],
+        ["if", "    (ready) return;"],
+        ["service.Do", "    (first, second);"],
+        ["else if (first ||", "    second) { }"],
+        ["while (TryRead(out value) &&", "    IsReady(value)) { }"],
+        ["do { Apply(); } while (first &&", "    second);"],
+        ["for (int index = 0;", "    index < Count(); index++) { }"],
+        ["foreach (Entity entity in", "    Entities()) { }"],
+        ["bool prepared = TryPrepare(first,", "    second, third);"],
+        ["bool prepared =", "    TryPrepare(first, second);"],
+        ["bool sameRequest = request.isEnabled &&", "    request.creationIndex == creationIndex;"],
+        ["return first &&", "    second;"],
+        ["return Other(first,", "    second);"],
+        ["bool enabled = entity", "    .isEnabled;"],
+        ['Apply($"{Format(")")}",', '    second);'],
+        ["service.Do<Foo<Bar>>(first,", "    second);"],
+        ["var group = game.GetGroup(GameMatcher", "    .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(first,", "        second)));"],
+        ["bool ready = request.IsEnabled &&", "    request.HasCoins()", "        .Equals(true);"],
+        ["var values = source", "    .Where(IsReady)", "    .ToList();"],
+        ["private bool IsBusy =>", "    First ||", "    Second;"],
+        ["private bool IsBusy() =>", "    First ||", "    Second;"],
+    ]
+    for sample in wrapped:
+        assert list(expression_wrapping(sample, set(range(1, len(sample) + 1)))), sample
+        assert not list(expression_wrapping(sample, {len(sample) + 1})), "Untouched wrapping stays outside the change"
+    allowed = [
+        ["bool prepared = TryPrepareBoosterUse(storage, booster, needsTarget, ref requestWaitsForBoard, out int boardId, out List<BroomMove> moves);"],
+        ["private bool IsBusy =>", "    First || Second;"],
+        ["private bool IsBusy() =>", "    First || Second;"],
+        ["private void Construct(", "    Service first,", "    Service second) { }"],
+        ["[Inject] private void Construct(", "    Service first,", "    Service second) { }"],
+        ["GameEntity Create(", "    Config config,", "    int count) { return null; }"],
+        ["public Dialogue(", "    Service first,", "    Service second) { }"],
+        ["delegate void Callback(", "    int first,", "    int second);"],
+        ["if (contextAvailable && TryRead(out value)) { Apply(value); }"],
+        ["while (TryRead(out value) && IsReady(value)) { Apply(value); }"],
+        ["_slots = game.GetGroup(GameMatcher", "    .AllOf(", "        GameMatcher.Slot,", "        GameMatcher.Id));"],
+        ["dialogue.Play(onComplete: () =>", "{", "    Apply();", "});"],
+        ["Data value = new Data", "{", "    Count = 1,", "    Ready = true", "};"],
+        ["List<int> values = new()", "{", "    1,", "    2", "};"],
+        ["GameEntity request = CreateEntity.Empty()", "    .AddWorldPosition(position)", "    .AddActivateBoosterRequest(booster);"],
+        ["_doTweenService.CreateSequence(ref _sequence)", "    .Append(Body.DOScale(1f, ShowDuration))", "    .SetLoops(-1);"],
+        ["Tween tween = DOTween.To(() => alpha, value => alpha = value, 1f, duration)", "    .SetEase(Ease.Linear);"],
+        ["Tween tween = DOVirtual.Float(0f, 1f, duration, SetAlpha)", "    .SetEase(Ease.Linear);"],
+        ["Tween tween = DOVirtual.Int(0, lastFrame, duration, SetFrame)", "    .SetEase(Ease.Linear);"],
+        ["Tween tween = DOTween.ToAlpha(GetColor, SetColor, 1f, duration)", "    .SetEase(Ease.Linear);"],
+        ["Tween tween = DOVirtual.Vector3(start, end, duration, SetPosition)", "    .SetEase(Ease.Linear);"],
+        [r'string text = "if (first &&\nsecond)";'],
+        ['string text = $"{Format("(")}";', 'Apply(first, second);'],
+        ['string text = @"first', 'second";'],
+        ['string text = """', 'first', 'second', '""";'],
+        ["// if (first &&", "// second) { }"],
+    ]
+    for sample in allowed:
+        assert not list(expression_wrapping(sample, set(range(1, len(sample) + 1)))), sample
+    safe_string = ['string text = $"{Format("(")}";', 'Apply(first, second);']
+    assert not list(expression_wrapping(safe_string, {2})), "String punctuation must not affect the next changed statement"
+    nested_matcher = ["var group = game.GetGroup(GameMatcher", "    .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(first,", "        second)));"]
+    assert list(expression_wrapping(nested_matcher, {3})), "Matcher composition does not exempt ordinary generic calls"
+    nested = ["dialogue.Play(() =>", "{", "    Apply(first,", "        second);", "});"]
+    assert list(expression_wrapping(nested, {4})), "Structural callbacks do not exempt their ordinary calls"
+    nested_tween = ["Tween tween = DOTween.To(() => Read(first,", "    second), SetAlpha, 1f, duration)", "    .SetEase(Ease.Linear);"]
+    assert list(expression_wrapping(nested_tween, {2})), "Tween builders do not exempt nested ordinary calls"
+    print("single-line-expression self-test ok")
 
     matcher = ["_slots = game.GetGroup(GameMatcher", "    .AnyOf(", "        GameMatcher.Animating,", "        GameMatcher.Selected));"]
     assert len(list(anyof_matcher(matcher, {3}, "Assets/Code/SlotSystem.cs"))) == 1

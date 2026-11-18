@@ -95,6 +95,7 @@ class HookTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-B", str(SCRIPTS / "code-checks.py"), "--self-test"],
                                 capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("single-line-expression self-test ok", result.stdout)
         self.assertIn("dialogue-lifecycle self-test ok", result.stdout)
         self.assertIn("mono-lifecycle-order self-test ok", result.stdout)
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
@@ -456,6 +457,44 @@ class HookTests(unittest.TestCase):
                                 "    private int Count()\n    {\n        int count = 1;\n\n        return count;\n    }"))
         self.denied(self.hook('git commit -m "Исправил окно"'), "return")
 
+    def test_wrapped_control_headers_and_ordinary_expressions_are_denied(self):
+        bodies = ["if (first &&\n            second) return;",
+                  "while (TryRead(out value) &&\n            IsReady(value)) { }",
+                  "for (int index = 0;\n            index < Count(); index++) { }",
+                  "foreach (Entity entity in\n            Entities()) { }",
+                  "bool prepared = TryPrepare(first,\n            second, third);",
+                  "bool prepared =\n            TryPrepare(first, second);",
+                  "bool sameRequest = request.isEnabled &&\n            request.creationIndex == creationIndex;"]
+        bodies += ['Apply($"{Format(")")}",\n            second);',
+                   "service.Do<Foo<Bar>>(first,\n            second);",
+                   "var group = game.GetGroup(GameMatcher\n            .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(first,\n                second)));",
+                   "bool ready = request.IsEnabled &&\n            request.HasCoins()\n                .Equals(true);",
+                   "var values = source\n            .Where(IsReady)\n            .ToList();"]
+        for body in bodies:
+            with self.subTest(body=body):
+                self.stage("public class Example\n{\n    public void Execute()\n    {\n        " + body + "\n    }\n}\n")
+                self.denied(self.hook('git commit -m "Уточнил выражения"'), "физической строкой")
+
+    def test_long_single_line_call_and_named_facts_are_allowed(self):
+        source = ("public class Example\n{\n    public void Execute()\n    {\n"
+                  "        bool boosterPrepared = TryPrepareBoosterUse(storage, booster, needsTarget, ref requestWaitsForBoard, out int boardId, out List<BroomMove> moves);\n"
+                  "        if (!boosterPrepared)\n            return;\n"
+                  "        bool sameRequest = request.isEnabled && request.creationIndex == creationIndex;\n"
+                  "        bool rerollPending = sameRequest && request.isRerollPlaying;\n"
+                  "        while (TryRead(out value) && IsReady(value)) { Apply(value); }\n"
+                  "    }\n}\n")
+        self.stage(source)
+        self.commit_allowed(self.hook('git commit -m "Уточнил выражения"'))
+
+    def test_wrapping_check_preserves_delegate_declarations_and_interpolated_strings(self):
+        source = ('public class Example\n{\n'
+                  '    delegate void Callback(\n        int first,\n        int second);\n'
+                  '    public void Execute()\n    {\n'
+                  '        string text = $"{Format("(")}";\n'
+                  '        Apply(first, second);\n    }\n}\n')
+        self.stage(source)
+        self.commit_allowed(self.hook('git commit -m "Уточнил выражения"'))
+
     def test_root_progress_read_and_migration_extensions_are_allowed(self):
         declarations = ["public static ProgressData ReadFrom(this ProgressData progress, string json)",
                         "public static ProgressData PopulateFromSave(this ProgressData progress, string json)",
@@ -538,7 +577,7 @@ class HookTests(unittest.TestCase):
                         self.denied(self.hook('git commit -m "Исправил обход"'), "наличие ECS-группы")
 
     def test_multiline_ecs_group_presence_and_placeholder_headers_are_denied(self):
-        bodies = (("    private bool CanExecute =>\n        _requests.count >\n        0;", "наличие ECS-группы"),
+        bodies = (("    private bool CanExecute =>\n        _requests.count >\n        0;", "физической строкой"),
                   ("    public void Execute()\n    {\n        foreach (GameEntity\n"
                    "            _ in _requests)\n        {\n            Apply();\n        }\n    }", "итератор Entity"))
         for body, reason in bodies:
