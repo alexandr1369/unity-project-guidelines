@@ -605,14 +605,14 @@ class HookTests(unittest.TestCase):
                        "                Apply();\n            }\n        }\n    }")
         self.denied(self.hook('git commit -m "Исправил обход"'), "итератор Entity")
 
-    def test_ecs_group_zero_presence_comparisons_are_denied(self):
+    def test_ecs_group_zero_presence_comparisons_are_allowed(self):
         for member in ("count", "Count"):
             for operator in (">", "==", "!=", "<=", "<", ">="):
                 for comparison in (f"this._requests.{member} {operator} 0",
                                    f"0 {operator} _requests.{member}"):
                     with self.subTest(comparison=comparison):
                         self.stage_ecs("    private bool CanExecute =>\n        " + comparison + ";")
-                        self.denied(self.hook('git commit -m "Исправил обход"'), "наличие ECS-группы")
+                        self.commit_allowed(self.hook('git commit -m "Исправил обход"'))
 
     def test_multiline_ecs_group_presence_and_placeholder_headers_are_denied(self):
         bodies = (("    private bool CanExecute =>\n        _requests.count >\n        0;", "физической строкой"),
@@ -666,20 +666,20 @@ class HookTests(unittest.TestCase):
     def test_ecs_checks_only_block_added_violations(self):
         source = self.stage_ecs("    public void Execute()\n    {\n"
                                 "        foreach (GameEntity _ in _requests)\n        {\n"
-                                "            Apply();\n        }\n    }\n\n"
-                                "    private bool CanExecute =>\n        _requests.count > 0;")
+                                "            Apply();\n        }\n    }")
         self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
                  "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
                  "commit", "-qm", "Добавил старую фикстуру")
         self.stage(source.replace("    public void Execute()", "    private int _value;\n\n    public void Execute()"))
         self.commit_allowed(self.hook('git commit -m "Исправил поле"'))
-        self.stage(source.replace("_requests.count > 0", "_requests.Count == 0"))
-        self.denied(self.hook('git commit -m "Исправил обход"'), "наличие ECS-группы")
+        self.stage(source.replace("GameEntity _ in _requests", "GameEntity __ in _requests"))
+        self.denied(self.hook('git commit -m "Исправил обход"'), "итератор Entity")
 
     def test_ecs_group_declarations_are_read_from_index(self):
-        source = self.stage_ecs("    private bool CanExecute =>\n        _requests.count > 0;")
+        source = self.stage_ecs("    public void Execute()\n    {\n"
+                                "        foreach (var _ in _requests)\n            Apply();\n    }")
         (self.repo / FILE).write_text(source.replace("IGroup<GameEntity>", "List<GameEntity>"))
-        self.denied(self.hook('git commit -m "Исправил обход"'), "наличие ECS-группы")
+        self.denied(self.hook('git commit -m "Исправил обход"'), "итератор Entity")
 
     def build_environment(self, body, project=True):
         if project:
