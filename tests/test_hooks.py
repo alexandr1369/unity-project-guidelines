@@ -378,18 +378,20 @@ class HookTests(unittest.TestCase):
         self.stage(header + initialize + play + contract + cleanup + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
 
-    def test_monobehaviour_unity_callbacks_sit_between_initialize_and_cleanup(self):
+    def test_monobehaviour_unity_callbacks_precede_initialize(self):
         header = "public class VictoryDialogue : MonoBehaviour\n{\n"
         construct = "    private void Construct() { }\n"
         initialize = "    public void Initialize() { }\n"
         callbacks = "    private void Start() { Initialize(); }\n    private void OnDestroy() { CleanUp(); }\n"
         cleanup = "    public void CleanUp() { }\n"
-        self.stage(header + construct + initialize + cleanup + callbacks + "}\n")
+        self.stage(header + construct + initialize + callbacks + cleanup + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
-        self.stage(header + construct + callbacks + initialize + cleanup + "}\n")
+        self.stage(header + callbacks + construct + initialize + cleanup + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
         setter = "    public void SetHUDRoot(Transform root) { }\n"
-        self.stage(header + construct + setter + initialize + callbacks + cleanup + "}\n")
+        self.stage(header + construct + setter + callbacks + initialize + cleanup + "}\n")
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
+        self.stage(header + construct + callbacks + initialize + setter + cleanup + "}\n")
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
     def test_monobehaviour_cleanup_follows_public_methods(self):
@@ -416,11 +418,11 @@ class HookTests(unittest.TestCase):
     def test_unknown_unity_on_messages_do_not_cause_order_denial(self):
         source = ("public class VictoryDialogue : MonoBehaviour\n{\n"
                   "    private void Construct() { }\n"
-                  "    public void Initialize() { }\n"
                   "    private void OnCollisionEnter(Collision collision) { }\n"
                   "    private void OnDrawGizmos() { }\n"
                   "    private void Start() { Initialize(); }\n"
                   "    private void OnDestroy() { CleanUp(); }\n"
+                  "    public void Initialize() { }\n"
                   "    public void CleanUp() { }\n}\n")
         self.stage(source)
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))

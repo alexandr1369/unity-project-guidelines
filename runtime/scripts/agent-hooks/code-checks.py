@@ -511,7 +511,7 @@ def dialogue_lifecycle(lines, added):
 
 
 def mono_lifecycle_order(lines, added):
-    # CODE_STYLE.md: Construct, Initialize/SubscribeUpdates, колбэки Unity, публичные методы, очистка, остальные методы.
+    # CODE_STYLE.md: Construct, колбэки Unity, Initialize/SubscribeUpdates, публичные методы, очистка, остальные методы; место задаёт роль, не видимость.
     owner = next(((number, match) for number, line in enumerate(lines, 1) if (match := re.match(
         r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+(\w+)\s*:\s*(?:UnityEngine\.)?MonoBehaviour\b", line))), None)
     if owner is None:
@@ -519,7 +519,7 @@ def mono_lifecycle_order(lines, added):
 
     owner_line, declaration = owner
     indent = len(declaration.group(1)) + 4
-    lifecycle = {"Construct": 0, "Initialize": 1, "SubscribeUpdates": 2, "CleanUp": 5, "Dispose": 5, "Unsubscribe": 5}
+    lifecycle = {"Construct": 0, "Initialize": 2, "SubscribeUpdates": 3, "CleanUp": 5, "Dispose": 5, "Unsubscribe": 5}
     methods = []
     for number, line in enumerate(lines[owner_line:], owner_line + 1):
         if line.rstrip() == declaration.group(1) + "}":
@@ -541,14 +541,14 @@ def mono_lifecycle_order(lines, added):
                             r"(?:(?:Awake|OnEnable|Start|FixedUpdate|Update|LateUpdate|OnDisable|OnDestroy|Reset|OnValidate|OnTransformParentChanged|OnTransformChildrenChanged|OnRectTransformDimensionsChange|OnApplicationQuit)\s*\(\s*\)"
                             r"|(?:OnApplicationFocus|OnApplicationPause)\s*\(\s*bool\s+\w+\s*\))", text)
         if callback:
-            methods.append((number, name, 3))
-        elif not re.match(r"On[A-Z]|Set(?!On[A-Z])[A-Z]", name):
+            methods.append((number, name, 1))
+        elif not re.match(r"On[A-Z]", name):
             methods.append((number, name, 4 if "public" in modifiers or method.group("interface") else 6))
 
     for index, (number, name, order) in enumerate(methods):
         for prior_number, prior_name, prior_order in methods[:index]:
             if prior_order > order and {prior_order, order} != {4, 6} and (number in added or prior_number in added):
-                yield number, f"порядок MonoBehaviour: {name} ставь перед {prior_name} (Construct → Initialize/SubscribeUpdates → колбэки Unity → публичные методы → CleanUp → остальные методы)"
+                yield number, f"порядок MonoBehaviour: {name} ставь перед {prior_name} (Construct → колбэки Unity → Initialize/SubscribeUpdates → публичные методы → CleanUp → остальные методы)"
                 break
 
 
@@ -1093,24 +1093,27 @@ def self_test():
         ordered = [f"public class BoardHUD : {base}", "{",
                    "    public int Count => 1;",
                    "    [Inject] private void Construct() { }",
-                   "    public void Initialize() { }",
-                   "    private void SubscribeUpdates() { }",
                    "    private void Start() { Initialize(); }",
                    "    private void OnDestroy() { CleanUp(); }",
+                   "    public void Initialize() { }",
+                   "    private void SubscribeUpdates() { }",
                    "    public void Display() { }",
                    "    public void CleanUp() { }",
                    "    private void UpdateText() { }", "}"]
         assert not list(mono_lifecycle_order(ordered, set(range(1, len(ordered) + 1))))
         wrong = ordered[:]
         wrong.insert(4, wrong.pop(6))
-        assert list(mono_lifecycle_order(wrong, {5})), "New Start must follow initialization"
-        assert list(mono_lifecycle_order(wrong, {6})), "New Initialize must precede Start"
+        assert list(mono_lifecycle_order(wrong, {6})), "New Start must precede Initialize"
+        assert list(mono_lifecycle_order(wrong, {5})), "New Initialize must follow Unity callbacks"
         assert not list(mono_lifecycle_order(wrong, {2})), "Untouched legacy declarations do not fail"
         wrong[0] = "public class BoardService"
         assert not list(mono_lifecycle_order(wrong, set(range(1, len(wrong) + 1)))), "Services are not Unity objects"
         wrong = ordered[:]
         wrong[5], wrong[6] = wrong[6], wrong[5]
-        assert list(mono_lifecycle_order(wrong, {7})), "Unity callbacks follow SubscribeUpdates"
+        assert list(mono_lifecycle_order(wrong, {7})), "Unity callbacks precede Initialize"
+        setter = ordered[:]
+        setter.insert(4, "    public void SetSlot(int slot) { }")
+        assert list(mono_lifecycle_order(setter, {5})), "Set methods are public methods inside the frame"
         wrong = ordered[:]
         wrong[8], wrong[9] = wrong[9], wrong[8]
         assert list(mono_lifecycle_order(wrong, {9})), "CleanUp follows public methods"
@@ -1121,21 +1124,21 @@ def self_test():
         assert not list(mono_lifecycle_order(without_cleanup, set(range(1, len(without_cleanup) + 1)))), "Public and private methods are compared only through CleanUp"
         wrong = ordered[:]
         wrong[3], wrong[4] = wrong[4], wrong[3]
-        assert list(mono_lifecycle_order(wrong, {5})), "Construct precedes Initialize"
-        ordered[6] = "    private void Start(int count) { }"
-        assert list(mono_lifecycle_order(ordered, {7})), "An overload with arguments is an own method, not a Unity callback"
-        ordered[6] = "    private static void Start() { }"
-        assert list(mono_lifecycle_order(ordered, {7})), "Static methods are not Unity callbacks"
+        assert list(mono_lifecycle_order(wrong, {5})), "Construct precedes Unity callbacks"
+        ordered[4] = "    private void Start(int count) { }"
+        assert list(mono_lifecycle_order(ordered, {5})), "An overload with arguments is an own method, not a Unity callback"
+        ordered[4] = "    private static void Start() { }"
+        assert list(mono_lifecycle_order(ordered, {5})), "Static methods are not Unity callbacks"
     layout = ["public class RectScaleFitter : MonoBehaviour", "{",
               "    private void Reset() { }", "    private void OnValidate() { }",
               "    private void OnTransformParentChanged() { }", "    private void OnRectTransformDimensionsChange() { }",
               "    private void LateUpdate() { Apply(); }", "    private void Apply() { }", "}"]
     assert not list(mono_lifecycle_order(layout, set(range(1, len(layout) + 1)))), "Layout callbacks stay in the Unity block"
     application = ["public class ApplicationProvider : MonoBehaviour", "{",
-                   "    public void Initialize() { }",
                    "    private void OnApplicationPause(bool paused) { }",
                    "    private void OnApplicationFocus(bool focused) { }",
-                   "    private void OnDestroy() { }", "}"]
+                   "    private void OnDestroy() { }",
+                   "    public void Initialize() { }", "}"]
     assert not list(mono_lifecycle_order(application, set(range(1, len(application) + 1))))
     disposal = ["public class Board : MonoBehaviour, IDisposable", "{",
                 "    private void OnDestroy() { }", "    void IDisposable.Dispose() { }", "}"]
@@ -1144,11 +1147,11 @@ def self_test():
     assert list(mono_lifecycle_order(disposal, {3, 4})), "Explicit Dispose follows Unity callbacks"
     unknown_callbacks = ["public class BoardHUD : MonoBehaviour", "{",
                          "    private void Construct() { }",
-                         "    public void Initialize() { }",
                          "    private void OnCollisionEnter(Collision collision) { }",
                          "    private void OnDrawGizmos() { }",
                          "    private void Start() { Initialize(); }",
                          "    private void OnDestroy() { CleanUp(); }",
+                         "    public void Initialize() { }",
                          "    public void CleanUp() { }", "}"]
     assert not list(mono_lifecycle_order(unknown_callbacks, set(range(1, len(unknown_callbacks) + 1)))), "Unknown On-handlers are not evidence of an own method before Unity callbacks"
     print("mono-lifecycle-order self-test ok")
