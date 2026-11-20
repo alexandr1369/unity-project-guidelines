@@ -354,42 +354,55 @@ class HookTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.commit_allowed(self.hook('git commit -m "Исправил окно"', key=key))
 
-    def test_own_method_before_base_lifecycle_is_denied_until_reordered(self):
+    def test_dialogue_public_method_stays_between_initialize_and_cleanup(self):
         public_method = "    public void DisplayCompletedLevel(int level) { }\n"
         cleanup = "    protected override void CleanUp() { }\n"
         initialized = VALID.replace("\n}\n", "\n" + cleanup + "}\n")
         self.stage(initialized.replace("    protected override", public_method + "    protected override", 1))
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
-        self.stage(initialized.replace(cleanup, public_method + cleanup))
-        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
         self.stage(initialized.replace(cleanup, cleanup + public_method))
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
+        self.stage(initialized.replace(cleanup, public_method + cleanup))
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
-    def test_dialogue_contract_lifecycle_stays_together_before_play(self):
+    def test_dialogue_contract_and_api_precede_cleanup(self):
         header = "public class RerollDialogue : DialogueBase, IDisposable, IPointerDownHandler\n{\n"
         initialize = "    public void Initialize() { }\n"
         cleanup = "    public void CleanUp() { }\n    void IDisposable.Dispose() { }\n"
         contract = "    void IPointerDownHandler.OnPointerDown(PointerEventData eventData) { }\n"
         play = "    public void Play(Action onComplete) { }\n"
-        self.stage(header + initialize + play + cleanup + "}\n")
-        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
         self.stage(header + initialize + cleanup + contract + play + "}\n")
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
+        self.stage(header + initialize + contract + play + cleanup + "}\n")
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
-        self.stage(header + initialize + cleanup + play + contract + "}\n")
+        self.stage(header + initialize + play + contract + cleanup + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок диалога")
 
-    def test_monobehaviour_lifecycle_methods_precede_unity_callbacks(self):
+    def test_monobehaviour_unity_callbacks_sit_between_initialize_and_cleanup(self):
         header = "public class VictoryDialogue : MonoBehaviour\n{\n"
         construct = "    private void Construct() { }\n"
         initialize = "    public void Initialize() { }\n"
         callbacks = "    private void Start() { Initialize(); }\n    private void OnDestroy() { CleanUp(); }\n"
         cleanup = "    public void CleanUp() { }\n"
-        self.stage(header + construct + initialize + callbacks + cleanup + "}\n")
+        self.stage(header + construct + initialize + cleanup + callbacks + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
         self.stage(header + construct + callbacks + initialize + cleanup + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
         setter = "    public void SetHUDRoot(Transform root) { }\n"
-        self.stage(header + construct + setter + initialize + cleanup + callbacks + "}\n")
+        self.stage(header + construct + setter + initialize + callbacks + cleanup + "}\n")
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+
+    def test_monobehaviour_cleanup_follows_public_methods(self):
+        header = "public class BalloonHint : MonoBehaviour\n{\n"
+        initialize = "    public void Initialize() { }\n"
+        show = "    public void Show(string text) { }\n"
+        cleanup = "    public void CleanUp() { }\n"
+        helper = "    private void UpdateText() { }\n"
+        self.stage(header + initialize + cleanup + show + helper + "}\n")
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
+        self.stage(header + initialize + show + helper + cleanup + "}\n")
+        self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
+        self.stage(header + initialize + show + cleanup + helper + "}\n")
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
     def test_service_method_names_do_not_make_them_unity_callbacks(self):
@@ -404,11 +417,11 @@ class HookTests(unittest.TestCase):
         source = ("public class VictoryDialogue : MonoBehaviour\n{\n"
                   "    private void Construct() { }\n"
                   "    public void Initialize() { }\n"
-                  "    public void CleanUp() { }\n"
                   "    private void OnCollisionEnter(Collision collision) { }\n"
                   "    private void OnDrawGizmos() { }\n"
                   "    private void Start() { Initialize(); }\n"
-                  "    private void OnDestroy() { CleanUp(); }\n}\n")
+                  "    private void OnDestroy() { CleanUp(); }\n"
+                  "    public void CleanUp() { }\n}\n")
         self.stage(source)
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
 
