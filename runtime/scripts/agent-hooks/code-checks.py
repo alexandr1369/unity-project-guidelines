@@ -1010,7 +1010,7 @@ def approve_words(words, cwd):
 
 def new_type_words(cwd):
     # CODE_STYLE.md, «Перед тем как назвать…»: слово в имени нового типа берут из модуля, MonoBehaviour фичи или того,
-    # что видит игрок. Слова нет в коде проекта до коммита — оно новое, и вводит его только владелец.
+    # что видит игрок. Слова нет в коде проекта до коммита — оно новое: источник находит и одобряет ассистент, владельца не спрашивают.
     revisions = ["HEAD"] + ([merge_head(cwd)] if merge_head(cwd) else [])
     identifiers = "\n".join(run(["git", "grep", "-h", "-o", "-I", "-E", "[A-Za-z][A-Za-z0-9_]*", revision, "--", "*.cs"] + VOCABULARY_EXCLUDES, cwd)
                             for revision in revisions)
@@ -1028,8 +1028,8 @@ def new_type_words(cwd):
             words = [word for word in camel_words(match.group(1)) if not word.isdigit() and stem(word) not in vocabulary]
             if words:
                 found.append(f"{path}:{number}: новое слово {', '.join(words)} в имени {match.group(1)}: возьми слово из модуля, "
-                             f"его MonoBehaviour или того, что видит игрок; новое понятие — согласуй с владельцем и после его "
-                             f"«да» одобри: code-checks.py --approve-word {' '.join(words)}")
+                             f"его SDK, MonoBehaviour или того, что видит игрок. Источник нашёлся — одобри сам: code-checks.py "
+                             f"--approve-word {' '.join(words)}, нет — переименуй. Владельца об отдельном слове не спрашивай")
     return found
 
 
