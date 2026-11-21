@@ -99,6 +99,7 @@ class HookTests(unittest.TestCase):
         self.assertIn("dialogue-lifecycle self-test ok", result.stdout)
         self.assertIn("mono-lifecycle-order self-test ok", result.stdout)
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
+        self.assertIn("destructed-filter self-test ok", result.stdout)
 
     def test_new_production_comments_block_commit(self):
         comments = ("// Board уменьшит общий счётчик позже; после collapse останутся только анимации результата.", "/* Read this first. */",
@@ -684,6 +685,33 @@ class HookTests(unittest.TestCase):
                                 "        foreach (var _ in _requests)\n            Apply();\n    }")
         (self.repo / FILE).write_text(source.replace("IGroup<GameEntity>", "List<GameEntity>"))
         self.denied(self.hook('git commit -m "Исправил обход"'), "итератор Entity")
+
+    def test_destructed_filter_needs_a_reachable_mark(self):
+        def feature(*systems):
+            return ("public class GameplayFeature : Feature\n{\n    public GameplayFeature(ISystemFactory systems)\n    {\n"
+                    + "".join(f"        Add(systems.Create<{system}>());\n" for system in systems) + "    }\n}\n")
+
+        def system(name, matcher, body):
+            return (f"public class {name} : IExecuteSystem\n{{\n    private readonly IGroup<GameEntity> _requests;\n\n"
+                    f"    public {name}(GameContext game)\n    {{\n        _requests = game.GetGroup({matcher});\n    }}\n\n{body}\n}}\n")
+
+        matcher = "GameMatcher.AllOf(GameMatcher.VictoryRequest)"
+        read = "    public void Execute() => Apply(_requests.count);"
+        mark = ("    public void Execute()\n    {\n        foreach (GameEntity request in _requests.GetEntities(_buffer))\n"
+                "            request.isDestructed = true;\n    }")
+        self.stage(feature("VictoryReadSystem", "VictoryMarkSystem"), "Assets/Code/Gameplay/GameplayFeature.cs")
+        self.stage(system("VictoryReadSystem", matcher, read), "Assets/Code/Gameplay/VictoryReadSystem.cs")
+        self.stage(system("VictoryMarkSystem", matcher, mark), "Assets/Code/Gameplay/VictoryMarkSystem.cs")
+        self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                 "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+                 "commit", "-qm", "Добавил системы")
+        filtered = matcher + ".NoneOf(GameMatcher.Destructed)"
+        self.stage(system("VictoryReadSystem", filtered, read), "Assets/Code/Gameplay/VictoryReadSystem.cs")
+        self.denied(self.hook('git commit -m "Добавил фильтр"'), "NoneOf(Destructed) без пути: сущность с VictoryRequest")
+        self.stage(feature("VictoryMarkSystem", "VictoryReadSystem"), "Assets/Code/Gameplay/GameplayFeature.cs")
+        self.commit_allowed(self.hook('git commit -m "Добавил фильтр"'))
+        self.stage(system("VictoryReadSystem", filtered, mark), "Assets/Code/Gameplay/VictoryReadSystem.cs")
+        self.denied(self.hook('git commit -m "Добавил фильтр"'), "у выборки, которую система только гасит")
 
     def build_environment(self, body, project=True):
         if project:

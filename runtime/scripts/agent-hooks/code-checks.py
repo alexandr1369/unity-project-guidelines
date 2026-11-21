@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import sys
-from collections import Counter
+from collections import Counter, namedtuple
 
 
 def run(args, cwd):
@@ -665,14 +665,18 @@ PROCESS_MARKER = re.compile(r"(ing|Processing)$")
 CODE_EXCLUDES = ("/Generated/", "/Tests/", "/Plugins/")
 
 
+def closing(text, start):
+    depth = 0
+    for index in range(start, len(text)):
+        depth += {"(": 1, ")": -1}.get(text[index], 0)
+        if depth == 0:
+            return index
+    return len(text)
+
+
 def matcher_clauses(text, matcher):
     for match in re.finditer(rf"\.{matcher}\(", text):
-        depth, close = 0, match.end() - 1
-        while close < len(text):
-            depth += {"(": 1, ")": -1}.get(text[close], 0)
-            if depth == 0:
-                break
-            close += 1
+        close = closing(text, match.end() - 1)
         yield text.count("\n", 0, match.start()) + 1, text.count("\n", 0, close) + 1, re.findall(r"\w+Matcher\.(\w+)", text[match.start():close + 1])
 
 
@@ -725,6 +729,174 @@ def noneof_problems(code, changed):
                     yield path, start, f"NoneOf({component}) — маркер исключают и вне фичи, где его ставят, а близнеца с AllOf в этом модуле нет: это фильтр «кто в выборке»: выход из игры — положительным <Субъект>Active в AllOf, «ещё не» и правило игры — проверкой в теле"
 
 
+def blank_literals(source):
+    return re.sub(r'(?P<raw>"{3,})[\s\S]*?(?P=raw)|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/',
+                  lambda match: re.sub(r"[^\n]", " ", match.group()), source)
+
+
+def brace_blocks(text):
+    blocks, opened = [], []
+    for match in re.finditer(r"[{}]", text):
+        if match.group() == "{":
+            opened.append(match.start())
+        elif opened:
+            blocks.append((opened.pop(), match.start()))
+    return blocks
+
+
+def class_spans(text, blocks):
+    closes = dict(blocks)
+    return [(match.group(1), match.end() - 1, closes.get(match.end() - 1, len(text)))
+            for match in re.finditer(r"\b(?:class|struct)\s+(\w+)[^{;]*\{", text)]
+
+
+def statement_start(text, position):
+    return max(text.rfind(mark, 0, position) for mark in ";{}") + 1
+
+
+def matcher_components(text):
+    excluded = {component for _, _, components in noneof_clauses(text) for component in components}
+    return set(re.findall(r"\w+Matcher\s*\.\s*(\w+)", text)) - excluded - {"AllOf", "AnyOf", "NoneOf"}
+
+
+def system_order(sources):
+    # Плоский порядок систем каждого корня: фича добавляет системы и вложенные фичи через Add(systems.Create<X>()).
+    # Одноимённые фичи разных модулей (Gameplay и Meta BoostersFeature) различаются по namespace и using родителя.
+    features = {}
+    for text in sources.values():
+        if "Create<" in text:
+            namespace = next(iter(re.findall(r"\bnamespace\s+([\w.]+)", text)), "")
+            usings = set(re.findall(r"^\s*using\s+([\w.]+)\s*;", text, re.M))
+            for name, start, end in class_spans(text, brace_blocks(text)):
+                added = re.findall(r"\bAdd\s*\(\s*\w+\s*\.\s*Create\s*<\s*(\w+)\s*>", text[start:end])
+                if added:
+                    features.setdefault(name, []).append((namespace, usings, added))
+
+    def walk(feature, seen, flat):
+        namespace, usings, added = feature
+        for name in added:
+            flat.append(name)
+            options = features.get(name, []) if name not in seen else []
+            visible = [option for option in options
+                       if option[0] in usings or namespace == option[0] or namespace.startswith(option[0] + ".")]
+            for option in visible or options:
+                walk(option, seen | {name}, flat)
+        return flat
+
+    order = {}
+    for root in features.keys() - {name for options in features.values() for _, _, added in options for name in added}:
+        for index, name in enumerate(name for feature in features[root] for name in walk(feature, {root}, [])):
+            order.setdefault(name, []).append((root, index))
+    return order
+
+
+DESTRUCT_MARK = re.compile(r"\b(\w+)\s*\.\s*isDestructed\s*=\s*true\b")
+CALLBACK_HEADER = re.compile(r"=>\s*$|\bdelegate\s*(?:\([^()]*\))?\s*$")
+LOCAL_FUNCTION = re.compile(r"^\s*(?!(?:if|else|for|foreach|while|switch|using|lock|catch|fixed|return|new|await|yield)\b)"
+                            r"(?:(?:static|async|unsafe)\s+)*[\w.<>\[\],?]+\s+\w+\s*\([^()]*\)\s*$")
+GROUP_FIELD = re.compile(r"\b(\w+)\s*=\s*[\w.]*\bGetGroup\s*\(")
+CONDITIONAL = re.compile(r"\b(?:if|else|for|foreach|while|case|default)\b|\?|=>")
+DestructMark = namedtuple("DestructMark", "path line owner member callback components removed loops")
+
+
+def destruct_marks(sources):
+    # Где сущность помечают isDestructed = true: класс и метод, callback ли это, какие компоненты у сущности видны
+    # (обход группы, чтение is/has/значения) и какие снимаются безусловно рядом с пометкой.
+    for path, text in sources.items():
+        sites = list(DESTRUCT_MARK.finditer(text))
+        if not sites:
+            continue
+        blocks = brace_blocks(text)
+        classes = class_spans(text, blocks)
+        for site in sites:
+            position, variable = site.start(), re.escape(site.group(1))
+            line = text.count("\n", 0, position) + 1
+            owners = [span for span in classes if span[1] < position < span[2]]
+            if not owners:
+                yield DestructMark(path, line, None, "", True, set(), set(), set())
+                continue
+            owner, class_start, class_end = max(owners, key=lambda span: span[1])
+            chain = sorted(block for block in blocks if class_start < block[0] < position < block[1])
+            headers = [text[statement_start(text, start):start] for start, _ in chain]
+            callback = (not chain or "=>" in text[statement_start(text, position):position]
+                        or any(CALLBACK_HEADER.search(header) or LOCAL_FUNCTION.match(header) for header in headers[1:]))
+            member = next(iter(re.findall(r"(\w+)\s*\(", headers[0])), "") if chain else ""
+            scope_start, scope_end = chain[0] if chain else (statement_start(text, position), site.end())
+            scope = text[scope_start:scope_end]
+            groups = {match.group(1): matcher_components(text[match.end():closing(text, match.end() - 1)])
+                      for match in GROUP_FIELD.finditer(text, class_start, class_end)}
+            components = set(re.findall(rf"\b{variable}\s*\.\s*(?:is|has)([A-Z]\w*)\b(?!\s*=(?!=))", scope))
+            components |= set(re.findall(rf"\b{variable}\s*\.\s*([A-Z]\w*)\b(?!\s*(?:[(<]|=(?!=)))", scope))
+            loops = set(re.findall(rf"\b{variable}\s+in\s+(?:this\s*\.\s*)?(\w+)", scope))
+            for field in loops | set(re.findall(rf"\b{variable}\s*=\s*(?:this\s*\.\s*)?(\w+)\s*\.", scope)):
+                components |= groups.get(field, set())
+            removed = set()
+            for removal in re.finditer(rf"\b{variable}\s*\.\s*(?:is(\w+)\s*=\s*false\b|Remove(\w+)\s*\()", scope):
+                at = scope_start + removal.start()
+                block = max((block for block in blocks if block[0] < at < block[1]), default=(0, len(text)))
+                if block[0] < position < block[1] and not CONDITIONAL.search(text[statement_start(text, at):at]):
+                    removed.add(removal.group(1) or removal.group(2))
+            yield DestructMark(path, line, owner, member, callback, components - {"Destructed", "Enabled"}, removed, loops)
+
+
+def reaches(mark, system, field, order):
+    # Пометку видит выборка system, если её ставят вне ECS-цикла или раньше в Execute-проходе; пометку из Cleanup
+    # и из систем после system убирает Cleanup-проход того же кадра. Сама system, гася сущность при обходе этой же
+    # выборки, пути не создаёт: обход идёт по снимку группы.
+    if mark.callback or mark.owner not in order:
+        return True
+    if mark.member == "Cleanup":
+        return False
+    if mark.owner == system:
+        return field is None or field not in mark.loops
+    if system not in order:
+        return True
+    return any(root != other or index < position for root, index in order[mark.owner] for other, position in order[system])
+
+
+def destructed_filter_problems(code, changed):
+    # OPTIONAL_ENTITAS.md, «Системы»: NoneOf(Destructed) — только при достижимом пути. Без пути, при снятии компонента
+    # из AllOf той же пометкой и у выборки, которую система только гасит, фильтр мёртвый.
+    added = []
+    for path, lines in changed.items():
+        text = blank_literals(code[path])
+        for match in re.finditer(r"\.NoneOf\(", text):
+            close = closing(text, match.end() - 1)
+            start, end = text.count("\n", 0, match.start()) + 1, text.count("\n", 0, close) + 1
+            if "Destructed" in re.findall(r"\w+Matcher\.(\w+)", text[match.start():close + 1]) and lines.intersection(range(start, end + 1)):
+                added.append((path, start, text, match.start(), close))
+    if not added:
+        return
+    sources = {path: blank_literals(text) for path, text in code.items()}
+    order = system_order(sources)
+    marks = list(destruct_marks(sources))
+    for path, line, text, position, close in added:
+        statement = text[statement_start(text, position):text.find(";", close)]
+        components = matcher_components(statement)
+        owners = [span for span in class_spans(text, brace_blocks(text)) if span[1] < position < span[2]]
+        if not components or not owners:
+            continue
+        system, class_start, class_end = max(owners, key=lambda span: span[1])
+        field = next(iter(re.findall(r"^\s*(?:this\s*\.\s*)?(\w+)\s*=(?!=)", statement)), None)
+        if field:
+            body = text[class_start:class_end]
+            uses = [use for use in re.finditer(rf"\b{field}\b", body) if not re.match(r"\s*(?:;|=(?!=))", body[use.end():])]
+            extinguished = re.findall(rf"\bforeach\s*\(\s*[\w.]+\s+(\w+)\s+in\s+(?:this\s*\.\s*)?{field}\b[^;{{}}]*?\)\s*"
+                                      rf"(?:\{{\s*\1\s*\.\s*isDestructed\s*=\s*true\s*;\s*\}}|\1\s*\.\s*isDestructed\s*=\s*true\s*;)", body)
+            if uses and len(extinguished) == len(uses):
+                yield path, line, "NoneOf(Destructed) у выборки, которую система только гасит: повторная пометка ничего не меняет, убери фильтр (OPTIONAL_ENTITAS.md, «Системы»)"
+                continue
+        found = [mark for mark in marks if mark.components & components]
+        if any(reaches(mark, system, field, order) for mark in found if not mark.removed & components):
+            continue
+        reasons = [f"{mark.owner}.{mark.member} снимает {', '.join(sorted(mark.removed & components))}" if mark.removed & components
+                   else f"{mark.owner}.Cleanup" if mark.member == "Cleanup" else f"{system} гасит обходом этой выборки" if mark.owner == system
+                   else f"{mark.owner} после {system}" for mark in found]
+        yield path, line, (f"NoneOf(Destructed) без пути: сущность с {', '.join(sorted(components))} не помечают раньше в Execute-проходе "
+                           f"или вне ECS-цикла" + (f" ({'; '.join(dict.fromkeys(reasons))})" if reasons else "") +
+                           ". OPTIONAL_ENTITAS.md, «Системы»: пути нет — убери фильтр; путь есть, а хук его не видит, — покажи путь владельцу")
+
+
 def noneof_marker(cwd):
     changed = {path: added_lines(cwd, path) for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split()
                if path.endswith(".cs") and not any(part in path for part in CODE_EXCLUDES)}
@@ -736,7 +908,7 @@ def noneof_marker(cwd):
             code[path] = open(os.path.join(cwd, path), encoding="utf-8-sig", errors="ignore").read()
     for path in changed:
         code[path] = run(["git", "show", f":{path}"], cwd)
-    return [f"{path}:{number}: {message}" for path, number, message in noneof_problems(code, changed)]
+    return [f"{path}:{number}: {message}" for path, number, message in [*noneof_problems(code, changed), *destructed_filter_problems(code, changed)]]
 
 
 def system_direct_save(cwd):
@@ -779,9 +951,7 @@ def duplicate_save_stage(cwd):
 
 def ecs_group_usage(lines, added):
     # OPTIONAL_ENTITAS.md: у Entity-итератора доменное имя.
-    source = "\n".join(lines)
-    source = re.sub(r'(?P<raw>"{3,})[\s\S]*?(?P=raw)|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/',
-                    lambda match: re.sub(r"[^\n]", " ", match.group()), source)
+    source = blank_literals("\n".join(lines))
     groups = set(re.findall(r"\bIGroup\s*<\s*(?:\w+\.)*\w*Entity\s*>\s+(\w+)\b", source))
     rules = (
         (r"\bforeach\s*\(\s*(?:\w+\.)*\w*Entity\s+_+\s+in\s+[^;{}]*?\)", False,
@@ -1079,6 +1249,30 @@ def self_test():
     assert not list(ecs_group_usage(group_usage, {2, 3})), "Pure group-existence checks are allowed"
     assert len(list(ecs_group_usage(group_usage, {4}))) == 1, "Group iterators still require domain names"
     print("ecs-group-usage self-test ok")
+
+    def destructed(read_body, mark_body, systems=("ReadSystem", "MarkSystem"), changed=True):
+        feature = "public class GameplayFeature : Feature\n{\n    public GameplayFeature(ISystemFactory systems)\n    {\n" + "".join(
+            f"        Add(systems.Create<{system}>());\n" for system in systems) + "    }\n}\n"
+        group = "        _requests = game.GetGroup(GameMatcher.AllOf(GameMatcher.Request).NoneOf(GameMatcher.Destructed));\n"
+        system = "public class {0} : IExecuteSystem\n{{\n    private readonly IGroup<GameEntity> _requests;\n\n    public {0}(GameContext game)\n    {{\n{1}    }}\n\n{2}\n}}\n"
+        code = {"GameplayFeature.cs": feature, "ReadSystem.cs": system.format("ReadSystem", group, read_body),
+                "MarkSystem.cs": system.format("MarkSystem", group.replace(".NoneOf(GameMatcher.Destructed)", ""), mark_body)}
+        return [message for _, _, message in destructed_filter_problems(code, {"ReadSystem.cs": {7 if changed else 1}})]
+
+    read = "    public void Execute() => Apply(_requests.count);"
+    mark = "    public void Execute()\n    {\n        foreach (GameEntity request in _requests.GetEntities(_buffer))\n            request.isDestructed = true;\n    }"
+    assert "MarkSystem после ReadSystem" in destructed(read, mark)[0], "A later system's mark is removed by Cleanup"
+    assert not destructed(read, mark, ("MarkSystem", "ReadSystem")), "An earlier system's mark reaches the group"
+    assert not destructed(read, mark, changed=False), "Untouched filters are not checked"
+    removal = mark.replace("            request.isDestructed", "        {\n            request.isRequest = false;\n            request.isDestructed").replace("= true;\n    }", "= true;\n        }\n    }")
+    assert "снимает Request" in destructed(read, removal, ("MarkSystem", "ReadSystem"))[0]
+    assert not destructed(read, removal.replace("request.isRequest = false;", "if (Done) request.isRequest = false;"), ("MarkSystem", "ReadSystem")), "A conditional removal keeps the path"
+    assert "MarkSystem.Cleanup" in destructed(read, mark.replace("Execute()", "Cleanup()"), ("MarkSystem", "ReadSystem"))[0]
+    assert not destructed(read, mark.replace("request.isDestructed = true;", "Play(() => request.isDestructed = true);")), "A callback marks outside the ECS loop"
+    assert "только гасит" in destructed(mark, mark)[0]
+    assert "ReadSystem гасит обходом" in destructed(mark.replace("            request.isDestructed", "        {\n            Apply(request);\n            request.isDestructed")
+                                                       .replace("= true;\n    }", "= true;\n        }\n    }"), "", ("ReadSystem",))[0]
+    print("destructed-filter self-test ok")
 
     for base in ("DialogueBase", "Code.Gameplay.Dialogues.UI.DialogueBase", "ScreenBase", "BaseWindow"):
         for callback in ("Awake", "OnEnable", "Start", "Update", "LateUpdate", "FixedUpdate", "OnDisable", "OnDestroy", "OnUpdate"):
