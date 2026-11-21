@@ -296,6 +296,20 @@ class HookTests(unittest.TestCase):
                 self.assertIn("владелец сделал сам в GitHub", context)
         self.assertFalse(marker.exists())
 
+    def test_merge_guard_finds_pull_request_after_flags(self):
+        binaries = self.root / "bin"
+        binaries.mkdir()
+        calls = self.root / "gh-calls"
+        gh = binaries / "gh"
+        gh.write_text(f"#!/bin/sh\necho \"$@\" >> {shlex.quote(str(calls))}\n"
+                      "case \"$2\" in view) echo parent ;; list) echo 301 ;; esac\n")
+        gh.chmod(0o755)
+        env = os.environ | {"PATH": str(binaries) + os.pathsep + os.environ["PATH"]}
+        for command in ("gh pr merge 171 --merge", "gh pr merge --merge --delete-branch 171", "gh pr merge -t 'Тема 5' 171"):
+            with self.subTest(command=command):
+                self.denied(self.hook(command, env=env), "на ветке PR #171 стоят открытые PR #301")
+        self.assertNotIn("view 5", calls.read_text())
+
     def test_failed_or_pending_merge_and_sync_do_not_claim_completion(self):
         for command in ("gh pr merge 171", "git fetch --prune", "git pull --ff-only"):
             for response in ({"exit_code": 1}, {"exit_code": None, "session_id": 1}, None):

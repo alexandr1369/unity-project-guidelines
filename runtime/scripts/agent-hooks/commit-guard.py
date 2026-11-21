@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -49,18 +50,33 @@ if commit:
     if found:
         reasons.append("код в индексе нарушает правила _guidelines:\n" + "\n".join(found[:15]))
 
-merge = re.search(START + r"gh pr merge\s+(\d+)", command, re.M)
+
+def merge_target(arguments):
+    # Номер, URL или ветка PR — первый позиционный аргумент `gh pr merge`, в том числе после флагов; без него gh берёт PR
+    # текущей ветки.
+    try:
+        tokens = shlex.split(arguments)
+    except ValueError:
+        return []
+    values = {"-b", "--body", "-F", "--body-file", "-t", "--subject", "--match-head-commit", "-A", "--author-email"}
+    return next(([token] for index, token in enumerate(tokens)
+                 if not token.startswith("-") and (index == 0 or tokens[index - 1] not in values)), [])
+
+
+merge = re.search(START + r"gh pr merge\b([^;&|\n]*)", command, re.M)
 if merge:
     # GIT_WORKFLOW.md, стек PR: base дочернего переставляют до merge родителя, после merge поздно.
     repo = command_directory(command[:merge.end()], cwd)
+    target = merge_target(merge.group(1))
     gh = lambda *args: subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True, timeout=4).stdout.strip()
     try:
-        head = gh("pr", "view", merge.group(1), "--json", "headRefName", "-q", ".headRefName")
+        head = gh("pr", "view", *target, "--json", "headRefName", "-q", ".headRefName")
         children = gh("pr", "list", "--state", "open", "--base", head, "--json", "number", "-q", ".[].number").split() if head else []
     except (OSError, subprocess.TimeoutExpired):
         children = []
     if children:
-        reasons.append(f"на ветке PR #{merge.group(1)} стоят открытые PR {', '.join('#' + child for child in children)}: до merge "
+        parent = "#" + target[0] if target and target[0].isdigit() else (target[0] if target else "текущей ветки")
+        reasons.append(f"на ветке PR {parent} стоят открытые PR {', '.join('#' + child for child in children)}: до merge "
                        f"переставь их base на ветку, куда вливается родитель (`gh pr edit <номер> --base main`), после merge поздно")
 
 if reasons:
