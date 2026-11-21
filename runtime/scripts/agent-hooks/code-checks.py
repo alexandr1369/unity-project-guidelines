@@ -1033,6 +1033,9 @@ def approve_words(words, cwd):
 def new_type_words(cwd):
     # CODE_STYLE.md, «Перед тем как назвать…»: слово в имени нового типа берут из модуля, MonoBehaviour фичи или того,
     # что видит игрок. Слова нет в коде проекта до коммита — оно новое: источник находит и одобряет ассистент, владельца не спрашивают.
+    # В первом коммите репозитория словаря ещё нет, сверять не с чем.
+    if not run(["git", "rev-parse", "-q", "--verify", "HEAD"], cwd).strip():
+        return []
     revisions = ["HEAD"] + ([merge_head(cwd)] if merge_head(cwd) else [])
     identifiers = "\n".join(run(["git", "grep", "-h", "-o", "-I", "-E", "[A-Za-z][A-Za-z0-9_]*", revision, "--", "*.cs"] + VOCABULARY_EXCLUDES, cwd)
                             for revision in revisions)

@@ -296,6 +296,18 @@ class HookTests(unittest.TestCase):
                 self.assertIn("владелец сделал сам в GitHub", context)
         self.assertFalse(marker.exists())
 
+    def test_new_type_words_are_checked_only_against_existing_history(self):
+        first = self.root / "first"
+        first.mkdir()
+        self.git("init", "-q", repo=first)
+        file = first / PRODUCTION_FILE
+        file.parent.mkdir(parents=True)
+        file.write_text("public class VictoryDialogue\n{\n}\n")
+        self.git("add", "--", PRODUCTION_FILE, repo=first)
+        self.commit_allowed(self.hook('git commit -m "Добавил окно победы"', cwd=first))
+        self.stage("public class VictoryQuux\n{\n}\n", "Assets/Code/Gameplay/VictoryQuux.cs")
+        self.denied(self.hook('git commit -m "Добавил окно победы"'), "новое слово Victory, Quux в имени VictoryQuux")
+
     def test_merge_guard_finds_pull_request_after_flags(self):
         binaries = self.root / "bin"
         binaries.mkdir()
