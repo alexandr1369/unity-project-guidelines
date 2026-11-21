@@ -48,6 +48,10 @@ codex plugin add unity-project-guidelines@unity-project-guidelines
 codex plugin add unity-project-hooks@unity-project-guidelines
 ```
 
+В Claude Code хуки запускает `run-installed.py`: после `claude plugin update` открытые сессии
+сразу берут проверки установленной версии. Новые хуки в `hooks/claude-hooks.json` и текст
+навыка подхватываются после `/reload-plugins` или перезапуска сессии.
+
 После обновления проверить статус через Hooks или `hooks/list` загрузчика той версии Codex,
 в которой идёт работа: нужны ровно пять хуков `unity-project-hooks`, `enabled: true` и
 `trustStatus: trusted`, без ошибок загрузки. У пакета `unity-project-guidelines` хуков быть

@@ -827,13 +827,30 @@ class RuntimePackageTests(unittest.TestCase):
     def test_claude_main_plugin_points_once_to_same_runtime(self):
         handlers = self.handlers(ROOT / ".claude-plugin" / "plugin.json", ROOT)
         self.assertEqual(len(handlers), 5)
-        commands = [handler["command"].replace("${CLAUDE_PLUGIN_ROOT}", str(ROOT)) for _, handler in handlers]
-        scripts = [Path(shlex.split(command)[-1]).resolve() for command in commands]
-        self.assertEqual(len(set(scripts)), 5)
-        self.assertTrue(all(script.is_file() and script.is_relative_to(RUNTIME.resolve()) for script in scripts))
-        self.assertCountEqual([script.name for script in scripts],
-                              ["commit-guard.py", "verify-builds.sh", "mcp-long-command-guard.py",
-                               "prompt-reminders.py", "pr-description-reminder.py"])
+        commands = [shlex.split(handler["command"].replace("${CLAUDE_PLUGIN_ROOT}", str(ROOT))) for _, handler in handlers]
+        self.assertTrue(all(command[:3] == ["python3", "-B", str(SCRIPTS / "run-installed.py")] for command in commands))
+        scripts = [command[3] for command in commands]
+        self.assertTrue(all((SCRIPTS / script).is_file() for script in scripts))
+        self.assertCountEqual(scripts, ["commit-guard.py", "verify-builds.sh", "mcp-long-command-guard.py",
+                                        "prompt-reminders.py", "pr-description-reminder.py"])
+
+    def test_claude_hooks_run_the_installed_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plugins = Path(temporary) / "plugins"
+            old, new = (plugins / "cache" / "market" / "rules" / version / "runtime" / "scripts" / "agent-hooks"
+                        for version in ("old", "new"))
+            for scripts in (old, new):
+                scripts.mkdir(parents=True)
+                (scripts / "probe.py").write_text("import sys\nprint(__file__, sys.stdin.read(), *sys.argv[1:])\n")
+            shutil.copy(SCRIPTS / "run-installed.py", old)
+            run = lambda: subprocess.run([sys.executable, "-B", str(old / "run-installed.py"), "probe.py", "flag"],
+                                         input="payload", capture_output=True, text=True, timeout=15).stdout
+            self.assertRegex(run(), r"/old/runtime/scripts/agent-hooks/probe\.py payload flag")
+            (plugins / "installed_plugins.json").write_text(json.dumps({"plugins": {"rules@market": [
+                {"installPath": str(new.parents[2]), "lastUpdated": "2026-11-21T09:37:21.467Z"}]}}))
+            self.assertRegex(run(), r"/new/runtime/scripts/agent-hooks/probe\.py payload flag")
+            (new / "probe.py").unlink()
+            self.assertRegex(run(), r"/old/runtime/scripts/agent-hooks/probe\.py payload flag")
 
     def test_runtime_excludes_guidelines_tests_and_generated_files(self):
         forbidden = [str(path.relative_to(RUNTIME)) for path in RUNTIME.rglob("*")
