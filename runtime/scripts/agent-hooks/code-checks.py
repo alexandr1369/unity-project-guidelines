@@ -6,6 +6,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections import Counter, namedtuple
@@ -391,7 +392,7 @@ def expression_wrapping(lines, added):
 
 
 def inserted_in_list(lines, added):
-    # CODE_STYLE.md, «Порядок объявления»: новая привязка в инсталлере дописывается в конец своего метода. Поля,
+    # CODE_STYLE.md, «Новые объявления дописывать в конец списка»: новая привязка в инсталлере дописывается в конец своего метода. Поля,
     # константы и matcher-ы хук не проверяет: там соседство по смыслу даёт ложные срабатывания.
     for number in sorted(added):
         if number < 2 or number >= len(lines) or number - 1 in added or number + 1 in added:
@@ -425,7 +426,7 @@ def block_body_end(lines, start):
 
 
 def single_return_getter(lines, added):
-    # CODE_STYLE.md, «Поля и свойства»: свойство из одного выражения пишется через =>, даже если условие
+    # CODE_STYLE.md, «Форматирование»: свойство из одного выражения пишется через =>, даже если условие
     # переносится по строкам; get { return ...; } с единственным return не пишется.
     for index, line in enumerate(lines):
         if line.strip() != "get" or index + 1 >= len(lines) or lines[index + 1].strip() != "{":
@@ -719,7 +720,7 @@ def code_feature(path):
 
 
 def noneof_problems(code, changed):
-    # OPTIONAL_ENTITAS.md, white-list и black-list: NoneOf — по маркеру «уже сделано», который ставят и исключают системы
+    # OPTIONAL_ENTITAS.md, «Системы»: NoneOf — по маркеру «уже сделано», который ставят и исключают системы
     # одной фичи, по идущему процессу (…ing, …Processing) или у близнецов одного модуля: одна система берёт AllOf(X),
     # другая NoneOf(X), а X — вид сущности, его нигде не снимают. Маркер, который исключают в фиче, где его не ставят
     # и где нет близнеца, — фильтр «кто в выборке» (выход из игры): только положительным <Субъект>Active в AllOf.
@@ -1053,8 +1054,9 @@ def new_type_words(cwd):
             words = [word for word in camel_words(match.group(1)) if not word.isdigit() and stem(word) not in vocabulary]
             if words:
                 found.append(f"{path}:{number}: новое слово {', '.join(words)} в имени {match.group(1)}: возьми слово из модуля, "
-                             f"его SDK, MonoBehaviour или того, что видит игрок. Источник нашёлся — одобри сам: code-checks.py "
-                             f"--approve-word {' '.join(words)}, нет — переименуй. Владельца об отдельном слове не спрашивай")
+                             f"его SDK, MonoBehaviour или того, что видит игрок. Источник нашёлся — одобри сам из папки проекта: "
+                             f"`python3 -B {shlex.quote(os.path.realpath(__file__))} --approve-word {' '.join(words)}`, "
+                             f"нет — переименуй. Владельца об отдельном слове не спрашивай")
     return found
 
 

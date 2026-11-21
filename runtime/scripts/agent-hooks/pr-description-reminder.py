@@ -241,7 +241,7 @@ if is_commit and not is_push and not is_pr_create:
         messages.append(
             "Новые компоненты: " + ", ".join(components) + ". Для каждого до push назови существующий факт, который уже говорит то же самое: "
             "компонент, группу, состояние действия. Нашёлся — новый компонент не нужен: CoinsMoved дублировал Animating с FromSlotId/ToSlotId "
-            "у принятого хода. Не нашёлся — назови владельца, кто ставит, кто читает и когда он умирает (OPTIONAL_ENTITAS.md, «Новые компоненты»).")
+            "у принятого хода. Не нашёлся — назови владельца, кто ставит, кто читает и когда он умирает (OPTIONAL_ENTITAS.md, «Новые компоненты и генерация Jenny»).")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": " ".join(messages)}}, ensure_ascii=False))
     sys.exit(0)
 
