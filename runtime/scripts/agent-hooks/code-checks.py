@@ -436,6 +436,27 @@ def single_return_getter(lines, added):
             yield index + 1, "свойство из одного выражения: пиши через =>, условие можно перенести по строкам"
 
 
+EXPRESSION_MEMBER = re.compile(r"\s*(?:\[[^\]]*\]\s*)*(?:public|private|protected|internal)\s")
+EXPRESSION_ACCESSOR = re.compile(r"\s*(?:(?:public|private|protected|internal)\s+)+(?:get|set|init)\s*$")
+DECLARATION_ASSIGNMENT = re.compile(r"(?<![=!<>])=(?![=>])")
+
+
+def expression_body_line(lines, added):
+    # CODE_STYLE.md, «Форматирование»: у expression-bodied свойства, метода и конструктора реализация всегда на
+    # следующей строке после =>. Лямбды, ветви switch, get/set свойства и инициализаторы полей не проверяются.
+    for number in sorted(added):
+        if number > len(lines):
+            continue
+        head, arrow, body = lines[number - 1].partition("=>")
+        if not arrow or not body.strip() or "{" in head or not EXPRESSION_MEMBER.match(head) or EXPRESSION_ACCESSOR.match(head):
+            continue
+        previous = None
+        while previous != head:
+            previous, head = head, re.sub(r"\([^()]*\)", "()", head)
+        if not DECLARATION_ASSIGNMENT.search(head):
+            yield number, "реализация справа от =>: у свойства, метода и конструктора пиши её на следующей строке"
+
+
 def awake_method(lines, added):
     # CODE_STYLE.md, «Паттерны Unity»: Awake не пишем. Подписки — в Start, снятие — в OnDestroy; подготовку, которая
     # нужна до первого вызова сразу после создания, делает Initialize, который зовёт фабрика.
@@ -972,7 +993,8 @@ def ecs_group_usage(lines, added):
 
 CHECKS = (return_spacing, config_extension, component_name, expression_wrapping, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
-          serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage)
+          serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
+          expression_body_line)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher)
 
 
@@ -1249,6 +1271,24 @@ def self_test():
     assert not list(ecs_group_usage(group_usage, {2, 3})), "Pure group-existence checks are allowed"
     assert len(list(ecs_group_usage(group_usage, {4}))) == 1, "Group iterators still require domain names"
     print("ecs-group-usage self-test ok")
+
+    same_line = ["private LevelAttemptData Attempt => Data.Attempt;",
+                 "    public Foo(IBar bar) => _bar = bar;",
+                 "    [Inject] private void Construct(IBar bar) => _bar = bar;",
+                 "    public static bool operator ==(Coin left, Coin right) => Equals(left, right);",
+                 "    public void Apply(int count = 1) => Add(count);"]
+    assert len(list(expression_body_line(same_line, set(range(1, len(same_line) + 1))))) == len(same_line)
+    assert not list(expression_body_line(same_line, set())), "Only added lines are checked"
+    allowed = ["public bool HasCoins =>",
+               "    _coins > 0;",
+               "private readonly Action _apply = () => Apply();",
+               "    PaymentVerification.Valid => \"valid\",",
+               "dialogue.Closed += () => OnDialogueClosed(dialogue);",
+               "public int Count { get => _count; set => _count = value; }",
+               "    private set => _progress.Level = value;",
+               "int Local() => 1;"]
+    assert not list(expression_body_line(allowed, set(range(1, len(allowed) + 1))))
+    print("expression-body-line self-test ok")
 
     def destructed(read_body, mark_body, systems=("ReadSystem", "MarkSystem"), changed=True):
         feature = "public class GameplayFeature : Feature\n{\n    public GameplayFeature(ISystemFactory systems)\n    {\n" + "".join(
