@@ -511,7 +511,8 @@ def dialogue_lifecycle(lines, added):
 
 
 def mono_lifecycle_order(lines, added):
-    # CODE_STYLE.md: Construct, колбэки Unity, Initialize/SubscribeUpdates, публичные методы, очистка, остальные методы; место задаёт роль, не видимость.
+    # CODE_STYLE.md: Construct и разовый Set создателя, колбэки Unity, Initialize/SubscribeUpdates, публичные методы, очистка,
+    # остальные методы; место задаёт роль, не видимость. Объявленные классом protected virtual/abstract — блок контракта базы.
     owner = next(((number, match) for number, line in enumerate(lines, 1) if (match := re.match(
         r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+(\w+)\s*:\s*(?:UnityEngine\.)?MonoBehaviour\b", line))), None)
     if owner is None:
@@ -527,28 +528,31 @@ def mono_lifecycle_order(lines, added):
         if len(line) - len(line.lstrip()) != indent:
             continue
         text = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
-        method = re.match(r"\s*(?:(?:public|protected|internal|private|static|virtual|override|sealed|async)\s+)*[\w.<>,?\[\]]+\s+(?P<interface>(?:\w+\.)*)(?P<name>\w+)(?:<[^>()]*>)?\s*\(", text)
+        method = re.match(r"\s*(?:(?:public|protected|internal|private|static|virtual|abstract|override|sealed|async)\s+)*[\w.<>,?\[\]]+\s+(?P<interface>(?:\w+\.)*)(?P<name>\w+)(?:<[^>()]*>)?\s*\(", text)
         if not method:
             continue
         name = method.group("name")
         if name == declaration.group(2):
             continue
         modifiers = text[:method.start("interface")].split()
-        if name in lifecycle and "static" not in modifiers:
-            methods.append((number, name, lifecycle[name]))
-            continue
         callback = re.match(r"\s*(?:(?:public|protected|internal|private|virtual|override|sealed|async)\s+)*(?:void|(?:System\.Collections\.)?IEnumerator)\s+"
                             r"(?:(?:Awake|OnEnable|Start|FixedUpdate|Update|LateUpdate|OnDisable|OnDestroy|Reset|OnValidate|OnTransformParentChanged|OnTransformChildrenChanged|OnRectTransformDimensionsChange|OnApplicationQuit)\s*\(\s*\)"
                             r"|(?:OnApplicationFocus|OnApplicationPause)\s*\(\s*bool\s+\w+\s*\))", text)
         if callback:
             methods.append((number, name, 1))
+        elif "protected" in modifiers and {"virtual", "abstract"} & set(modifiers):
+            continue
+        elif name in lifecycle and "static" not in modifiers:
+            methods.append((number, name, lifecycle[name]))
+        elif re.match(r"Set[A-Z]", name) and "public" in modifiers and "static" not in modifiers and all(order <= 0.5 for _, _, order in methods):
+            methods.append((number, name, 0.5))
         elif not re.match(r"On[A-Z]", name):
             methods.append((number, name, 4 if "public" in modifiers or method.group("interface") else 6))
 
     for index, (number, name, order) in enumerate(methods):
         for prior_number, prior_name, prior_order in methods[:index]:
             if prior_order > order and {prior_order, order} != {4, 6} and (number in added or prior_number in added):
-                yield number, f"порядок MonoBehaviour: {name} ставь перед {prior_name} (Construct → колбэки Unity → Initialize/SubscribeUpdates → публичные методы → CleanUp → остальные методы)"
+                yield number, f"порядок MonoBehaviour: {name} ставь перед {prior_name} (Construct и разовый Set создателя → колбэки Unity → Initialize/SubscribeUpdates → публичные методы → CleanUp → остальные методы)"
                 break
 
 
@@ -569,7 +573,8 @@ def dialogue_hide_base_first(lines, added, signature):
 
 
 def dialogue_lifecycle_order(lines, added):
-    # CODE_STYLE.md: Initialize/SubscribeUpdates открывают API окна, CleanUp закрывает его.
+    # CODE_STYLE.md: разовый Set создателя идёт за Construct, Initialize/SubscribeUpdates открывают API окна, CleanUp закрывает
+    # его. Объявленные классом protected virtual/abstract — блок контракта базы.
     owner = next((match for line in lines if (match := re.match(
         r"^([ \t]*)(?:(?:public|internal|abstract|sealed|partial)\s+)*class\s+\w+\s*:\s*(?:\w+\.)*(DialogueBase|ScreenBase|BaseWindow)\b", line))), None)
     if not owner:
@@ -582,7 +587,7 @@ def dialogue_lifecycle_order(lines, added):
         if len(line) - len(line.lstrip()) != indent:
             continue
         text = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
-        method = re.match(r"\s*(?:(?:public|protected|internal|private|static|virtual|override|sealed|async)\s+)*[\w.<>,?\[\]]+\s+(?P<interface>(?:\w+\.)*)(?P<name>\w+)(?:<[^>()]*>)?\s*\(", text)
+        method = re.match(r"\s*(?:(?:public|protected|internal|private|static|virtual|abstract|override|sealed|async)\s+)*[\w.<>,?\[\]]+\s+(?P<interface>(?:\w+\.)*)(?P<name>\w+)(?:<[^>()]*>)?\s*\(", text)
         if not method:
             continue
         name = method.group("name")
@@ -593,11 +598,15 @@ def dialogue_lifecycle_order(lines, added):
             yield from dialogue_hide_base_first(lines, added, number)
         if overriding and name not in lifecycle_order and (not dialogue or not public or name.startswith("On")):
             continue
+        if "protected" in modifiers and {"virtual", "abstract"} & set(modifiers):
+            continue
         role = "interface" if method.group("interface") else "public" if public else "method"
         if name in lifecycle_order and "static" not in modifiers:
             role = "lifecycle"
         elif name == "Construct":
             role = "construct"
+        elif public and "static" not in modifiers and re.match(r"Set[A-Z]", name) and all(previous in ("construct", "setup") for _, _, previous in methods):
+            role = "setup"
 
         methods.append((number, name, role))
 
@@ -605,13 +614,13 @@ def dialogue_lifecycle_order(lines, added):
     if not lifecycle:
         return
 
-    ranks = {"construct": 0, "interface": 3, "public": 4, "method": 6}
+    ranks = {"construct": 0, "setup": 0.5, "interface": 3, "public": 4, "method": 6}
     unordered = set() if dialogue else {3, 4, 6}
     ordered = []
     for number, name, role in methods:
         rank = lifecycle_order[name] if role == "lifecycle" else ranks[role]
         if any(previous_rank > rank and not {previous_rank, rank} <= unordered and added.intersection({previous, number}) for previous, previous_rank in ordered):
-            yield number, f"{name} нарушает порядок диалога: Construct, Initialize/SubscribeUpdates, интерфейсы и публичные методы, CleanUp, остальные методы"
+            yield number, f"{name} нарушает порядок диалога: Construct и разовый Set создателя, Initialize/SubscribeUpdates, интерфейсы и публичные методы, CleanUp, остальные методы"
         ordered.append((number, rank))
 
 
@@ -1111,9 +1120,14 @@ def self_test():
         wrong = ordered[:]
         wrong[5], wrong[6] = wrong[6], wrong[5]
         assert list(mono_lifecycle_order(wrong, {7})), "Unity callbacks precede Initialize"
-        setter = ordered[:]
-        setter.insert(4, "    public void SetSlot(int slot) { }")
-        assert list(mono_lifecycle_order(setter, {5})), "Set methods are public methods inside the frame"
+        setter = ordered[:4] + ["    public void SetSlot(int slot) { }"] + ordered[4:]
+        assert not list(mono_lifecycle_order(setter, set(range(1, len(setter) + 1)))), "The creator's Set follows Construct"
+        setter[3], setter[4] = setter[4], setter[3]
+        assert list(mono_lifecycle_order(setter, {4})), "Construct precedes the creator's Set"
+        setter = ordered[:5] + ["    public void SetSlot(int slot) { }"] + ordered[5:]
+        assert list(mono_lifecycle_order(setter, {6})), "A Set does not split Unity callbacks"
+        setter = ordered[:8] + ["    public void SetSlot(int slot) { }"] + ordered[8:]
+        assert not list(mono_lifecycle_order(setter, set(range(1, len(setter) + 1)))), "A Set called during work is a public method"
         wrong = ordered[:]
         wrong[8], wrong[9] = wrong[9], wrong[8]
         assert list(mono_lifecycle_order(wrong, {9})), "CleanUp follows public methods"
@@ -1154,6 +1168,18 @@ def self_test():
                          "    public void Initialize() { }",
                          "    public void CleanUp() { }", "}"]
     assert not list(mono_lifecycle_order(unknown_callbacks, set(range(1, len(unknown_callbacks) + 1)))), "Unknown On-handlers are not evidence of an own method before Unity callbacks"
+    contract = ["public abstract class DialogueBase : MonoBehaviour", "{",
+                "    [Inject] private void Construct() { }",
+                "    private void Start() { Initialize(); SubscribeUpdates(); }",
+                "    private void OnDestroy() => CleanUp();",
+                "    public void Show() { }",
+                "    protected virtual void Initialize() { }",
+                "    protected virtual void SubscribeUpdates() { }",
+                "    protected abstract void CleanUp();",
+                "    protected void SetCloseButtonVisible(bool isVisible) { }", "}"]
+    assert not list(mono_lifecycle_order(contract, set(range(1, len(contract) + 1)))), "A base keeps its declared extension points in one contract block"
+    contract[6] = "    protected override void Initialize() { }"
+    assert list(mono_lifecycle_order(contract, {7})), "Overrides follow the common order"
     print("mono-lifecycle-order self-test ok")
 
     for base in ("DialogueBase", "Code.Gameplay.Dialogues.UI.DialogueBase", "ScreenBase", "BaseWindow"):
@@ -1174,20 +1200,21 @@ def self_test():
         assert not list(dialogue_lifecycle_order(wrong, {2})), "Untouched declarations do not fail"
         payload = "    public void SetSlotIdAndPriceGems(int slotId, int priceGems) { }"
         before = ordered[:4] + [payload] + ordered[4:]
-        assert list(dialogue_lifecycle_order(before, {5})), "Opening data follows initialization"
+        assert not list(dialogue_lifecycle_order(before, set(range(1, len(before) + 1)))), "The creator's Set follows Construct"
         before_construct = ordered[:3] + [payload] + ordered[3:]
-        assert list(dialogue_lifecycle_order(before_construct, {4, 5})), "DI precedes opening data"
+        assert list(dialogue_lifecycle_order(before_construct, {4, 5})), "Construct precedes the creator's Set"
         split = ordered[:5] + [payload] + ordered[5:]
-        assert list(dialogue_lifecycle_order(split, {6})), "Opening data does not split initialization"
+        assert list(dialogue_lifecycle_order(split, {6})), "A Set does not split initialization"
         after = ordered[:6] + [payload] + ordered[6:]
-        assert not list(dialogue_lifecycle_order(after, {7})), "Setters follow initialization"
+        assert not list(dialogue_lifecycle_order(after, {7})), "A Set called during work stays with public methods"
         late = ordered[:8] + [payload] + ordered[8:]
         assert list(dialogue_lifecycle_order(late, {9})), "Setters precede cleanup"
         for method in ("public static void SetItem(int item) { }", "private void SetItem(int item) { }",
-                       "public int DisplayItem(int item) { return item; }",
-                       "public void SetOnFlowCompleted(Action callback) { }"):
+                       "public int DisplayItem(int item) { return item; }"):
             before = ordered[:4] + [f"    {method}"] + ordered[4:]
             assert list(dialogue_lifecycle_order(before, {5})), method
+        hooks = ordered[:7] + ["    protected virtual void PlayReward() { }", "    protected abstract void ShowReward();"] + ordered[7:]
+        assert not list(dialogue_lifecycle_order(hooks, set(range(1, len(hooks) + 1)))), "Declared extension points stay in the contract block"
         if dialogue:
             hide = "    public override void Hide(bool animate) { }"
             assert not list(dialogue_lifecycle_order(ordered[:6] + [hide] + ordered[6:], {7}))

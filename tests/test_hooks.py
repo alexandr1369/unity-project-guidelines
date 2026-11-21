@@ -390,6 +390,8 @@ class HookTests(unittest.TestCase):
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
         setter = "    public void SetHUDRoot(Transform root) { }\n"
         self.stage(header + construct + setter + callbacks + initialize + cleanup + "}\n")
+        self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
+        self.stage(header + construct + callbacks + setter + initialize + cleanup + "}\n")
         self.denied(self.hook('git commit -m "Исправил окно"'), "порядок MonoBehaviour")
         self.stage(header + construct + callbacks + initialize + setter + cleanup + "}\n")
         self.commit_allowed(self.hook('git commit -m "Исправил окно"'))
