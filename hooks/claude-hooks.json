@@ -23,7 +23,7 @@
           {
             "type": "command",
             "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/agent-hooks/run-installed.py\" verify-builds.sh",
-            "if": "Bash(git push*)",
+            "if": "Bash(git *push*)",
             "timeout": 600,
             "statusMessage": "Собираю csproj проекта перед push..."
           }
