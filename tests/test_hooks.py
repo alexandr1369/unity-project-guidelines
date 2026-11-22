@@ -99,6 +99,7 @@ class HookTests(unittest.TestCase):
         self.assertIn("dialogue-lifecycle self-test ok", result.stdout)
         self.assertIn("mono-lifecycle-order self-test ok", result.stdout)
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
+        self.assertIn("vendor-package-files self-test ok", result.stdout)
         self.assertIn("destructed-filter self-test ok", result.stdout)
 
     def test_new_production_comments_block_commit(self):

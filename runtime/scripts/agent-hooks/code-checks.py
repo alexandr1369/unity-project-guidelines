@@ -971,6 +971,30 @@ def duplicate_save_stage(cwd):
     return found
 
 
+def vendor_package_files(cwd):
+    # INTEGRATION_GUIDELINES.md, «Установка SDK»: пакет Google (Firebase, EDM, Google Mobile Ads) кладёт список своих файлов
+    # `*_version-*_manifest.txt`. Коммит, который трогает такой пакет, оставляет в индексе каждый файл списка, кроме
+    # исключённых `.gitignore` и копии EDM в Assets, когда EDM стоит пакетом UPM. Папку пакета можно перенести глубже,
+    # например в `Assets/Plugins`: файл с тем же путём внутри пакета считается на месте.
+    staged = set(run(["git", "diff", "--cached", "--name-only", "--no-renames", "-z"], cwd).split("\0"))
+    indexed = set(run(["git", "ls-files", "--cached", "-z"], cwd).split("\0"))
+    found = []
+    for manifest in sorted(path for path in indexed if re.search(r"_version-[^/]*_manifest\.txt$", path) and "Assets/" in path):
+        root = manifest[:manifest.index("Assets/")]
+        listed = {root + line.strip() for line in run(["git", "show", f":{manifest}"], cwd).splitlines() if line.strip()}
+        if manifest not in staged and not staged & listed:
+            continue
+
+        upm_edm = "com.google.external-dependency-manager" in run(["git", "show", f":{root}Packages/manifest.json"], cwd)
+        missing = sorted(path for path in listed - indexed
+                         if not (upm_edm and path.startswith(root + "Assets/ExternalDependencyManager/"))
+                         and not any(other.endswith("/" + path[len(root + "Assets/"):]) for other in indexed))
+        ignored = set(run(["git", "check-ignore", "--no-index", "--", *missing], cwd).splitlines()) if missing else set()
+        found.extend(f"{path}: нет файла из списка пакета {manifest}: ставь пакет целиком из официального дистрибутива, "
+                     f"большие бинарники — через LFS" for path in missing if path not in ignored)
+    return found
+
+
 def ecs_group_usage(lines, added):
     # OPTIONAL_ENTITAS.md: у Entity-итератора доменное имя.
     source = blank_literals("\n".join(lines))
@@ -1164,7 +1188,7 @@ def violations(cwd):
 
     restored = restored_pr_base_paths(cwd, found)
     code_problems = [message for path, messages in found.items() if path not in restored for message in messages]
-    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd)
+    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + vendor_package_files(cwd)
 
 
 def self_test():
@@ -1546,6 +1570,43 @@ def self_test():
         git("rm", "--", owner)
         assert not duplicate_save_stage(cwd), "Moving the single owner is allowed"
     print("duplicate-save-stage self-test ok")
+
+    with tempfile.TemporaryDirectory() as cwd:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+        def stage(path, source):
+            file = Path(cwd, path)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(source)
+            git("add", "--", path)
+
+        project = "src/game/"
+        manifest = project + "Assets/Firebase/Editor/FirebaseAnalytics_version-13.2.0_manifest.txt"
+        editor_library = project + "Assets/Firebase/Plugins/x86_64/FirebaseCppApp-13_2_0.bundle"
+        git("init", "-q")
+        Path(cwd, ".gitignore").write_text("*.pdb\n")
+        stage(project + "Packages/manifest.json", '{"dependencies": {"com.google.external-dependency-manager": "1.2.186"}}')
+        stage(manifest, "Assets/Firebase/Plugins/Firebase.App.dll\nAssets/Firebase/Plugins/Firebase.App.pdb\n"
+                        "Assets/ExternalDependencyManager/Editor/Google.VersionHandler.dll\n"
+                        "Assets/Firebase/Plugins/x86_64/FirebaseCppApp-13_2_0.bundle\n")
+        stage(project + "Assets/Firebase/Plugins/Firebase.App.dll", "")
+        assert vendor_package_files(cwd) == [f"{editor_library}: нет файла из списка пакета {manifest}: ставь пакет целиком "
+                                             f"из официального дистрибутива, большие бинарники — через LFS"]
+        stage(editor_library, "")
+        assert not vendor_package_files(cwd), "Ignored symbols and the Assets copy of UPM EDM are not required"
+        git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+            "commit", "-qm", "Fixture")
+        git("rm", "-q", "--", editor_library)
+        assert len(vendor_package_files(cwd)) == 1, "Removing a listed file touches the package"
+        git("reset", "-q", "--", editor_library)
+        stage(project + "Assets/Code/Example.cs", "")
+        assert not vendor_package_files(cwd), "Commits outside the package are not checked"
+        git("rm", "-q", "--cached", "--", editor_library)
+        assert len(vendor_package_files(cwd)) == 1
+        stage(project + "Assets/Plugins/Firebase/Plugins/x86_64/FirebaseCppApp-13_2_0.bundle", "")
+        assert not vendor_package_files(cwd), "A package moved under Assets/Plugins keeps its files"
+    print("vendor-package-files self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):
