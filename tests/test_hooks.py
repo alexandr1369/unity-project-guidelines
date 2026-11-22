@@ -797,6 +797,28 @@ class HookTests(unittest.TestCase):
                 self.assertEqual(self.hook(command, script="verify-builds.sh", env=env), "")
         self.assertFalse(marker.exists())
 
+    def test_branch_deletion_push_does_not_build(self):
+        marker = self.root / "dotnet-called"
+        env = self.build_environment(f"touch {shlex.quote(str(marker))}\nexit 1")
+        for command in ("git push origin --delete alex/feature", "git push -d origin alex/feature",
+                        "git push origin :alex/feature",
+                        f"git -C {shlex.quote(str(self.repo))} push origin --delete alex/feature"):
+            with self.subTest(command=command):
+                self.assertEqual(self.hook(command, script="verify-builds.sh", env=env), "")
+        self.assertFalse(marker.exists())
+        for command in ("git push origin --delete alex/old && git push origin main", "git push origin HEAD:alex/feature"):
+            with self.subTest(command=command):
+                self.denied(self.hook(command, script="verify-builds.sh", env=env), "Сборка падает")
+
+    def test_merged_server_branches_list_only_origin_task_branches(self):
+        for ref in ("refs/remotes/origin/main", "refs/remotes/origin/alex/feature", "refs/remotes/gitlab/main"):
+            self.git("update-ref", ref, "HEAD")
+        output = json.loads(self.hook("git fetch --prune", script="pr-description-reminder.py",
+                                      tool_response={"exit_code": 0}))["hookSpecificOutput"]
+        self.assertIn("Влитые ветки на сервере", output["additionalContext"])
+        self.assertIn("origin/alex/feature", output["additionalContext"])
+        self.assertNotIn("gitlab/main", output["additionalContext"])
+
 
 class GuidelinesPathTests(unittest.TestCase):
     def setUp(self):

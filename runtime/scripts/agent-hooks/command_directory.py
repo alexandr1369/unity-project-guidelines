@@ -32,13 +32,27 @@ def command_directory(command, cwd):
     return directory
 
 
+def deletes_only(command, pushes):
+    # Push, который только удаляет ветки на сервере, не отправляет код: собирать нечего.
+    for push in pushes:
+        try:
+            tokens = shlex.split(re.split(r"[;&|()\n]", command[push.end():], maxsplit=1)[0])
+        except ValueError:
+            return False
+        positional = [token for token in tokens if not token.startswith("-")]
+        if not ("--delete" in tokens or "-d" in tokens
+                or len(positional) > 1 and all(ref.startswith(":") for ref in positional[1:])):
+            return False
+    return True
+
+
 if __name__ == "__main__":
     data = json.load(sys.stdin)
     tool_input = data.get("tool_input") or {}
     command = tool_input.get("command") or tool_input.get("cmd") or ""
     if isinstance(command, list):
         command = " ".join(command)
-    push = re.search(START + GIT + r"\s+push(?![-\w])", command, re.M)
-    if push:
+    pushes = list(re.finditer(START + GIT + r"\s+push(?![-\w])", command, re.M))
+    if pushes and not deletes_only(command, pushes):
         cwd = tool_input.get("workdir") or data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or "."
-        print(command_directory(command[:push.end()], cwd))
+        print(command_directory(command[:pushes[0].end()], cwd))

@@ -111,6 +111,8 @@ def new_components(cwd):
 
 def merged_branches(cwd):
     # GIT_WORKFLOW.md, «После merge»: влитые task-ветки удаляются, а не копятся. Ветки чужих worktree не трогаем.
+    # На сервере предлагаем только ветки origin: удаление идёт через него, а у другого remote main — основная
+    # ветка чужого репозитория, хоть и влитая (офисный gitlab/main у сортера).
     main = run(["git", "rev-parse", "-q", "--verify", "origin/main"], cwd).stdout.strip()
     if not main:
         return [], []
@@ -124,7 +126,7 @@ def merged_branches(cwd):
         if subprocess.run(["git", "merge-base", "--is-ancestor", oid, main], cwd=cwd).returncode == 0:
             local.append(name)
     remote = [name.strip() for name in run(["git", "branch", "-r", "--merged", main], cwd).stdout.splitlines()
-              if name.strip() not in ("origin/main",) and "->" not in name]
+              if name.strip().startswith("origin/") and name.strip() != "origin/main" and "->" not in name]
     return local, remote
 
 
