@@ -95,7 +95,7 @@ class HookTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-B", str(SCRIPTS / "code-checks.py"), "--self-test"],
                                 capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("single-line-expression self-test ok", result.stdout)
+        self.assertIn("expression-layout self-test ok", result.stdout)
         self.assertIn("dialogue-lifecycle self-test ok", result.stdout)
         self.assertIn("mono-lifecycle-order self-test ok", result.stdout)
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
@@ -502,23 +502,51 @@ class HookTests(unittest.TestCase):
                                 "    private int Count()\n    {\n        int count = 1;\n\n        return count;\n    }"))
         self.denied(self.hook('git commit -m "Исправил окно"'), "return")
 
-    def test_wrapped_control_headers_and_ordinary_expressions_are_denied(self):
-        bodies = ["if (first &&\n            second) return;",
-                  "while (TryRead(out value) &&\n            IsReady(value)) { }",
-                  "for (int index = 0;\n            index < Count(); index++) { }",
-                  "foreach (Entity entity in\n            Entities()) { }",
-                  "bool prepared = TryPrepare(first,\n            second, third);",
-                  "bool prepared =\n            TryPrepare(first, second);",
-                  "bool sameRequest = request.isEnabled &&\n            request.creationIndex == creationIndex;"]
-        bodies += ['Apply($"{Format(")")}",\n            second);',
-                   "service.Do<Foo<Bar>>(first,\n            second);",
-                   "var group = game.GetGroup(GameMatcher\n            .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(first,\n                second)));",
-                   "bool ready = request.IsEnabled &&\n            request.HasCoins()\n                .Equals(true);",
-                   "var values = source\n            .Where(IsReady)\n            .ToList();"]
-        for body in bodies:
+    def test_broken_layouts_of_conditions_calls_and_expressions_are_denied(self):
+        cases = [("if (first &&\n            second) return;", "фигурных скобках"),
+                 ("if (first\n            || second) { }", "не по связкам"),
+                 ("for (int index = 0;\n            index < Count(); index++) { }", "for, foreach"),
+                 ("foreach (Entity entity in\n            Entities()) { }", "for, foreach"),
+                 ("bool prepared =\n            TryPrepare(first, second);", "между операндами"),
+                 ("bool sameRequest = request.isEnabled &&\n            request.creationIndex == creationIndex;", "между операндами"),
+                 ("Apply(\n            first,\n            second);", "начинаются с новой строки"),
+                 ("Apply(first,\n            second,\n            third);", "по одному на строку"),
+                 ('Apply(\n            $"{Format(")")}", second);', "начинаются с новой строки"),
+                 ("service.Do<Foo<Bar>>(\n            first,\n            second);", "начинаются с новой строки"),
+                 ("var group = game.GetGroup(GameMatcher\n            .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(\n"
+                  "                first,\n                second)));", "начинаются с новой строки"),
+                 ("bool ready = request.IsEnabled &&\n            request.HasCoins()\n                .Equals(true);", "между операндами"),
+                 ("var values = source\n            .Where(IsReady)\n            .ToList();", "между операндами")]
+        for body, message in cases:
             with self.subTest(body=body):
                 self.stage("public class Example\n{\n    public void Execute()\n    {\n        " + body + "\n    }\n}\n")
-                self.denied(self.hook('git commit -m "Уточнил выражения"'), "физической строкой")
+                self.denied(self.hook('git commit -m "Уточнил выражения"'), message)
+
+    def test_partially_wrapped_implementation_signature_is_denied(self):
+        source = ("public class Example\n{\n"
+                  "    private bool TryPrepare(GameEntity entity, MetaEntity storage,\n"
+                  "        out int boardId)\n    {\n        boardId = 0;\n        return true;\n    }\n}\n")
+        self.stage(source)
+        self.denied(self.hook('git commit -m "Уточнил выражения"'), "сигнатура перенесена частично")
+
+    def test_owner_layouts_of_conditions_calls_and_signatures_are_allowed(self):
+        source = ("public interface ISender\n{\n"
+                  "    void SendLevelComplete(int attempt, int seconds, int deals,\n        int moves, int boostersUsed);\n}\n"
+                  "public class Example\n{\n"
+                  "    private bool TryPrepare(\n        GameEntity entity,\n        MetaEntity storage,\n        out int boardId)\n"
+                  "    {\n        boardId = 0;\n        return true;\n    }\n"
+                  "    public void Execute()\n    {\n"
+                  "        if (fromSlot.ParentBoardId != boardId ||\n            !fromSlot.isSlotUnlocked ||\n"
+                  "            (fromSlot.isSlotFilled && fromSlot.isSlotSingleCoinNumber))\n        {\n            return;\n        }\n\n"
+                  "        Apply(first, second, third,\n            fourth);\n"
+                  "        GiveUpLevelSystem system = new(Resolve<GameContext>(), Resolve<MetaContext>(),\n"
+                  "            Resolve<IStaticDataService>(), stateMachine);\n"
+                  "    }\n\n"
+                  "    private SaveBoardChangeProgressSystem CreateSystem() =>\n"
+                  "        new SaveBoardChangeProgressSystem(game, meta, staticData, randomProvider, progressProvider,\n"
+                  "            dialogueService, curtainService, introLoadingService);\n}\n")
+        self.stage(source)
+        self.commit_allowed(self.hook('git commit -m "Сохранил раскладку выражений"'))
 
     def test_long_single_line_call_and_named_facts_are_allowed(self):
         source = ("public class Example\n{\n    public void Execute()\n    {\n"
@@ -546,15 +574,15 @@ class HookTests(unittest.TestCase):
         self.stage(source)
         self.commit_allowed(self.hook('git commit -m "Сохранил структуру выражений"'))
 
-    def test_structural_expression_boundaries_do_not_hide_wrapped_call_arguments(self):
-        bodies = ["service.Do(first,\n            () => Finish());",
-                  "dialogue.Play(() =>\n            Apply(first,\n                second));",
+    def test_structural_expression_boundaries_do_not_hide_vertical_call_arguments(self):
+        bodies = ["service.Do(\n            first,\n            () => Finish());",
+                  "dialogue.Play(() =>\n            Apply(\n                first,\n                second));",
                   "ownedTrays.Sort((left, right) => left.Ready\n"
-                  "            ? Compare(first,\n                second)\n            : Other());"]
+                  "            ? Compare(\n                first,\n                second)\n            : Other());"]
         for body in bodies:
             with self.subTest(body=body):
                 self.stage("public class Example\n{\n    public void Execute()\n    {\n        " + body + "\n    }\n}\n")
-                self.denied(self.hook('git commit -m "Сохранил структуру выражений"'), "физической строкой")
+                self.denied(self.hook('git commit -m "Сохранил структуру выражений"'), "начинаются с новой строки")
 
     def test_wrapping_check_preserves_delegate_declarations_and_interpolated_strings(self):
         source = ('public class Example\n{\n'
@@ -647,7 +675,7 @@ class HookTests(unittest.TestCase):
                         self.commit_allowed(self.hook('git commit -m "Исправил обход"'))
 
     def test_multiline_ecs_group_presence_and_placeholder_headers_are_denied(self):
-        bodies = (("    private bool CanExecute =>\n        _requests.count >\n        0;", "физической строкой"),
+        bodies = (("    private bool CanExecute =>\n        _requests.count >\n        0;", "между операндами"),
                   ("    public void Execute()\n    {\n        foreach (GameEntity\n"
                    "            _ in _requests)\n        {\n            Apply();\n        }\n    }", "итератор Entity"))
         for body, reason in bodies:

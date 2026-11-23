@@ -248,7 +248,8 @@ def flat_ternary(expression):
 
 
 def expression_wrapping(lines, added):
-    # CODE_STYLE.md: обычные выражения и заголовки — одной строкой, структурная раскладка сохраняется.
+    # CODE_STYLE.md, «Методы»: вызов — одной строкой или с компактным хвостом аргументов, сигнатура реализации — одной
+    # строкой или столбцом, перенесённое условие — по связкам && и || с телом в скобках. Структурная раскладка сохраняется.
     source = "\n".join(lines)
 
     masked, position = list(source), 0
@@ -349,20 +350,46 @@ def expression_wrapping(lines, added):
             start = end + 1
     layout = "".join(" " if index in structural_breaks else character for index, character in enumerate(source))
 
+    def wrapped_after(text, position):
+        rest = text[position + 1:]
+        return "\n" in rest[:len(rest) - len(rest.lstrip())]
+
+    def angle_masked(text):
+        depth, result = 0, []
+        for character in text:
+            depth += character == "<"
+            result.append(" " if depth and character == "," else character)
+            depth -= character == ">" and depth > 0
+        return "".join(result)
+
     for opening, closing in sorted(pairs.items()):
         prefix_start = source.rfind("\n", 0, len(source[:opening].rstrip())) + 1
         prefix = source[prefix_start:opening].strip()
         prefix = re.sub(r"^(?:\[[^\]]+\]\s*)+", "", prefix)
         declaration = re.match(r"(?:(?:public|private|protected|internal|static|override|abstract|virtual|async|sealed|partial|new|delegate)\s+)+[^=;{}]*$", prefix)
-        local_declaration = re.fullmatch(r"[\w.<>,?\[\]]+\s+\w+(?:<[^>]+>)?", prefix) and prefix.split()[0] not in ("return", "await", "new", "throw", "yield", "else")
+        local_declaration = re.fullmatch(r"\w[\w.<>,?\[\]]*\s+\w+(?:<[^>]+>)?", prefix) and prefix.split()[0] not in ("return", "await", "new", "throw", "yield", "else")
         if (declaration and not prefix.startswith("new ") or local_declaration) and "=>" not in prefix:
             declarations.append((opening, closing))
+            parameters = source[opening + 1:closing]
+            if "\n" in parameters and not source[closing + 1:].lstrip().startswith(";"):
+                top = top_level_expression(angle_masked(parameters)) or ""
+                commas = [index for index, character in enumerate(top) if character == ","]
+                if not wrapped_after(parameters, -1) or not all(wrapped_after(parameters, comma) for comma in commas):
+                    report(prefix_start, closing, "сигнатура перенесена частично: в реализации пиши параметры одной строкой или каждый на своей строке, начиная с первого")
             continue
         control = re.search(r"\b(if|while|for|foreach)\s*$", prefix)
         if "\n" not in source[prefix_start:closing]:
             continue
         if control:
-            report(prefix_start, closing, "заголовок управления перенесён: оставь его одной физической строкой, сохрани частоту вычислений цикла")
+            condition = source[opening + 1:closing]
+            top = top_level_expression(condition) or condition
+            endings = {line.rstrip()[-2:] for line in top.split("\n")[:-1]}
+            if control[1] in ("for", "foreach") or "\n" in source[prefix_start:opening]:
+                report(prefix_start, closing, "заголовок перенесён: for, foreach и начало условия до ( пиши одной строкой, длинный запрос вынеси в переменную")
+            elif len(endings) != 1 or not endings <= {"&&", "||"} or re.search(r"(&&|\|\|)(?!\s*\n)", top.rstrip()):
+                report(prefix_start, closing, "условие перенесено не по связкам: каждое законченное условие на своей строке, одинаковый && или || в конце строки")
+            elif not source[closing + 1:].lstrip().startswith(("{", ";")):
+                report(prefix_start, closing, "перенесённое условие требует тела в фигурных скобках")
             continue
         if "\n" not in layout[prefix_start:closing]:
             continue
@@ -377,17 +404,26 @@ def expression_wrapping(lines, added):
         expression = source[opening:closing + 1]
         if name in ("AllOf", "NoneOf", "AnyOf") or structural(expression):
             continue
-        report(prefix_start, closing, "аргументы вызова перенесены: обычный вызов записывай одной физической строкой независимо от ширины")
+        arguments = layout[opening + 1:closing]
+        top = top_level_expression(arguments) or ""
+        commas = [index for index, character in enumerate(top) if character == ","]
+        if "\n" in layout[prefix_start:opening] or wrapped_after(arguments, -1):
+            report(prefix_start, closing, "аргументы вызова начинаются с новой строки: оставь на строке вызова аргументы, которые помещаются, и переноси только хвост")
+        elif len(commas) >= 2 and all(wrapped_after(arguments, comma) for comma in commas):
+            report(prefix_start, closing, "аргументы вызова разложены по одному на строку: заполняй строку и переноси компактный хвост")
 
     for match in expression_heads:
         if any(start < match.start() < end for start, end in declarations):
             continue
         end = expression_end(match.end())
         expression = source[match.end():end]
-        inspected = layout[match.end():end].strip() if match["arrow"] else layout[match.end():end].rstrip()
+        call_breaks = {index for opening, closing in pairs.items() if match.end() <= opening and closing < end
+                       for index in range(opening, closing) if source[index] == "\n"}
+        outer = "".join(" " if index in call_breaks else layout[index] for index in range(match.end(), end))
+        inspected = outer.strip() if match["arrow"] else outer.rstrip()
         if "\n" not in inspected or structural(expression):
             continue
-        report(match.start(), end, "выражение перенесено: присваивание, return или выражение после => записывай одной физической строкой")
+        report(match.start(), end, "выражение перенесено между операндами: присваивание, return и выражение после => начинай на их строке, длинный вызов переноси хвостом аргументов")
     yield from (problem for _, _, problem in sorted(problems))
 
 
@@ -1197,34 +1233,40 @@ def self_test():
     from unittest.mock import patch
 
     wrapped = [
-        ["if (first &&", "    second)", "    return;"],
         ["if", "    (ready) return;"],
         ["service.Do", "    (first, second);"],
-        ["else if (first ||", "    second) { }"],
-        ["while (TryRead(out value) &&", "    IsReady(value)) { }"],
-        ["do { Apply(); } while (first &&", "    second);"],
+        ["if (first &&", "    second) return;"],
+        ["else if (first", "    || second) { }"],
+        ["while (TryRead(out value) &&", "    IsReady(value)) Apply(value);"],
+        ["do { Apply(); } while (first", "    && second);"],
+        ["if (Check(first,", "    second) && third)", "{", "}"],
+        ["if (first && second &&", "    third)", "{", "}"],
+        ["if (first ||", "    second &&", "    third)", "{", "}"],
         ["for (int index = 0;", "    index < Count(); index++) { }"],
         ["foreach (Entity entity in", "    Entities()) { }"],
-        ["bool prepared = TryPrepare(first,", "    second, third);"],
+        ["foreach (Entity entity in Find(value =>", "    value.Ready)) { }"],
         ["bool prepared =", "    TryPrepare(first, second);"],
         ["bool sameRequest = request.isEnabled &&", "    request.creationIndex == creationIndex;"],
-        ["return Other(first,", "    second);"],
         ["bool enabled = entity", "    .isEnabled;"],
-        ["service.Do(first,", "    () => Finish());"],
-        ["dialogue.Play(() =>", "    Apply(first,", "        second));"],
+        ["Apply(", "    first,", "    second);"],
+        ["Apply(first,", "    second,", "    third);"],
+        ["return Other(", "    first, second);"],
+        ["service.Do<Foo<Bar>>(", "    first,", "    second);"],
+        ["Apply(", '    $"{Format(")")}", second);'],
+        ["dialogue.Play(() =>", "    Apply(", "        first,", "        second));"],
         ["private bool IsBusy =>", "    First || Second ||", "    Third;"],
         ["private bool IsBusy =>", "    First &&", "    Second ||", "    Third;"],
         ["private bool IsBusy =>", "    Check(first,", "        second) ||", "    Third;"],
         ["ownedTrays.Sort((left, right) => left.Ready", "    ? Compare(first,", "        second)", "    : Other());"],
-        ["Apply(first,", "    ready", "        ? GetReady()", "        : GetWaiting());"],
         ["Apply(", "    ready", "        ? GetReady()", "        : GetWaiting());"],
-        ["foreach (Entity entity in Find(value =>", "    value.Ready)) { }"],
-        ['Apply($"{Format(")")}",', '    second);'],
-        ["service.Do<Foo<Bar>>(first,", "    second);"],
         ["return ready", "    ? Read<Foo, Bar>(first,", "        second)", "    : Other();"],
-        ["var group = game.GetGroup(GameMatcher", "    .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(first,", "        second)));"],
+        ["var group = game.GetGroup(GameMatcher", "    .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(", "        first,", "        second)));"],
         ["bool ready = request.IsEnabled &&", "    request.HasCoins()", "        .Equals(true);"],
         ["var values = source", "    .Where(IsReady)", "    .ToList();"],
+        ["private bool TryPrepare(GameEntity entity, MetaEntity storage,", "    out int boardId)", "{", "    boardId = 0;", "    return true;", "}"],
+        ["public Dialogue(", "    Service first, Service second) { }"],
+        ["public Dialogue(Service first,", "    Service second) { }"],
+        ["private bool IsReady(int first,", "    int second) =>", "    first > second;"],
     ]
     for sample in wrapped:
         assert list(expression_wrapping(sample, set(range(1, len(sample) + 1)))), sample
@@ -1244,12 +1286,30 @@ def self_test():
         ["int index = ready", "    ? GetReady()", "    : GetWaiting();"],
         ["Apply(ready", "    ? GetReady()", "    : GetWaiting());"],
         ["Apply(first, ready", "    ? GetReady()", "    : GetWaiting());"],
+        ["Apply(first,", "    ready", "        ? GetReady()", "        : GetWaiting());"],
         ["return ready", "    ? cached ?? fallback", "    : value;"],
         ["return CanUse(allowOverride: false) &&", "    CanPay();"],
         ["return Check(a && b) &&", "    IsReady();"],
         ["int value = ready", "    ? Read<Foo, Bar>()", "    : Other();"],
         ["return ready", "    ? Read<Foo, Bar>()", "    : Other();"],
         ["Apply(ready", "    ? Read<Foo, Bar>()", "    : Other());"],
+        ["if (fromSlot.ParentBoardId != boardId ||", "    !fromSlot.isSlotUnlocked ||", "    (fromSlot.isSlotFilled && fromSlot.isSlotSingleCoinNumber))", "{", "    continue;", "}"],
+        ["else if (first ||", "    second)", "{", "}"],
+        ["while (TryRead(out value) &&", "    IsReady(value))", "{", "    Apply(value);", "}"],
+        ["do { Apply(); } while (first &&", "    second);"],
+        ["bool prepared = TryPrepare(first, second,", "    third);"],
+        ["return new SaveBoardChangeProgressSystem(game, meta, staticData, randomProvider, progressProvider,", "    dialogueService, curtainService, introLoadingService);"],
+        ["GiveUpLevelSystem system = new(Resolve<GameContext>(), Resolve<MetaContext>(),", "    Resolve<IStaticDataService>(), stateMachine);"],
+        ["_system = new ActivateBoosterSystem(game, meta, staticData,", "    dialogueService, progressProvider);"],
+        ["return Other(first,", "    second);"],
+        ["service.Do(first,", "    () => Finish());"],
+        ["dialogue.Play(() =>", "    Apply(first,", "        second));"],
+        ['Apply($"{Format(")")}",', '    second);'],
+        ["service.Do<Foo<Bar>>(first,", "    second);"],
+        ["void SendLevelComplete(int attempt, int seconds, int deals,", "    int moves, int boostersUsed);"],
+        ["protected abstract void Apply(int first,", "    int second);"],
+        ["private bool TryPrepare(", "    GameEntity entity,", "    Dictionary<int, string> names,", "    out int boardId)", "{", "    boardId = 0;", "    return true;", "}"],
+        ["public void Execute(GameEntity entity, int count) { }"],
         ["private void Construct(", "    Service first,", "    Service second) { }"],
         ["[Inject] private void Construct(", "    Service first,", "    Service second) { }"],
         ["GameEntity Create(", "    Config config,", "    int count) { return null; }"],
@@ -1278,13 +1338,13 @@ def self_test():
         assert not list(expression_wrapping(sample, set(range(1, len(sample) + 1)))), sample
     safe_string = ['string text = $"{Format("(")}";', 'Apply(first, second);']
     assert not list(expression_wrapping(safe_string, {2})), "String punctuation must not affect the next changed statement"
-    nested_matcher = ["var group = game.GetGroup(GameMatcher", "    .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(first,", "        second)));"]
+    nested_matcher = ["var group = game.GetGroup(GameMatcher", "    .AllOf(GameMatcher.Slot, GetMatcher<Foo<Bar>>(", "        first,", "        second)));"]
     assert list(expression_wrapping(nested_matcher, {3})), "Matcher composition does not exempt ordinary generic calls"
-    nested = ["dialogue.Play(() =>", "{", "    Apply(first,", "        second);", "});"]
+    nested = ["dialogue.Play(() =>", "{", "    Apply(", "        first,", "        second);", "});"]
     assert list(expression_wrapping(nested, {4})), "Structural callbacks do not exempt their ordinary calls"
-    nested_tween = ["Tween tween = DOTween.To(() => Read(first,", "    second), SetAlpha, 1f, duration)", "    .SetEase(Ease.Linear);"]
+    nested_tween = ["Tween tween = DOTween.To(() => Read(", "    first,", "    second), SetAlpha, 1f, duration)", "    .SetEase(Ease.Linear);"]
     assert list(expression_wrapping(nested_tween, {2})), "Tween builders do not exempt nested ordinary calls"
-    print("single-line-expression self-test ok")
+    print("expression-layout self-test ok")
 
     matcher = ["_slots = game.GetGroup(GameMatcher", "    .AnyOf(", "        GameMatcher.Animating,", "        GameMatcher.Selected));"]
     assert len(list(anyof_matcher(matcher, {3}, "Assets/Code/SlotSystem.cs"))) == 1
