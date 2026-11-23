@@ -99,6 +99,7 @@ class HookTests(unittest.TestCase):
         self.assertIn("dialogue-lifecycle self-test ok", result.stdout)
         self.assertIn("mono-lifecycle-order self-test ok", result.stdout)
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
+        self.assertIn("unread-internal self-test ok", result.stdout)
         self.assertIn("vendor-package-files self-test ok", result.stdout)
         self.assertIn("destructed-filter self-test ok", result.stdout)
 
@@ -216,6 +217,16 @@ class HookTests(unittest.TestCase):
         self.assertIn("Тех-ошибки: восемь видов без проверок, 23.11.2026", context)
         self.assertNotIn("Аналитика, 23 ноября 2026", context)
         self.assertNotIn("## Что брать из материалов геймдизайна", context)
+
+    def test_every_prompt_lists_work_deferred_by_pull_requests(self):
+        (self.repo / "TASKS.md").write_text("# Задачи\n\n## Отложено из ГД\n\n### Тех-ошибки: восемь видов без проверок, 23.11.2026\n\n"
+                                            "## Отложено из МР\n\n### Аналитика: ключи кабинетов в игре, 24.11.2026\n\n"
+                                            "- Что осталось: ...\n\n## Мелкий долг\n\n### Логотип загрузки\n", encoding="utf-8")
+        context = json.loads(self.hook("", script="prompt-reminders.py", prompt="Покажи текущий баланс гемов"))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Отложено из ГД в TASKS.md: Тех-ошибки: восемь видов без проверок, 23.11.2026", context)
+        self.assertIn("Отложено из МР в TASKS.md: Аналитика: ключи кабинетов в игре, 24.11.2026", context)
+        self.assertIn("«Список задач»", context)
+        self.assertNotIn("Логотип загрузки", context)
 
     def test_game_design_materials_inject_selection_filter(self):
         for prompt in ("ГД прислал таблицу аналитики", "Возьми карточку из трелло", "По ТЗ нужен новый конфиг"):

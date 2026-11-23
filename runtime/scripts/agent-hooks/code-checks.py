@@ -1007,6 +1007,31 @@ def duplicate_save_stage(cwd):
     return found
 
 
+MEMBER_MODIFIERS = r"(?:(?:static|readonly|const|virtual|override|abstract|sealed|new|async|unsafe|extern)\s+)*"
+INTERNAL_MEMBER = re.compile(r"^\s+(?:\[[^\]]*\]\s*)*" + MEMBER_MODIFIERS + r"internal\s+" + MEMBER_MODIFIERS
+                             + r"(?!(?:class|struct|interface|enum|record|delegate)\b)[\w<>\[\],.?]+(?:\s*<[^>]*>)?\s+(\w+)"
+                             r"\s*(?:<[^>]*>)?\s*(?:\(|=(?!=)|;|\{|=>)")
+
+
+def unread_internal(cwd):
+    # GIT_WORKFLOW.md, «Ревью pull request»: видимость шире private — для читателя снаружи. internal-член, имя
+    # которого не встречается ни в одном другом файле, никто извне не читает, и он остаётся private.
+    found = []
+    for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).splitlines():
+        if not path.endswith(".cs") or "Assets/Code/" not in path or "/Generated/" in path or "/Plugins/" in path:
+            continue
+        lines = run(["git", "show", f":{path}"], cwd).split("\n")
+        for number in sorted(added_lines(cwd, path)):
+            match = INTERNAL_MEMBER.match(lines[number - 1]) if number <= len(lines) else None
+            if not match:
+                continue
+            readers = run(["git", "grep", "--cached", "-l", "-w", "-e", match.group(1), "--", "*.cs"], cwd).splitlines()
+            if not [reader for reader in readers if reader != path]:
+                found.append(f"{path}:{number}: internal {match.group(1)} не читают вне файла: оставь private, "
+                             "видимость расширяет PR, в котором появляется читатель")
+    return found
+
+
 def vendor_package_files(cwd):
     # INTEGRATION_GUIDELINES.md, «Установка SDK»: пакет Google (Firebase, EDM, Google Mobile Ads) кладёт список своих файлов
     # `*_version-*_manifest.txt`. Коммит, который трогает такой пакет, оставляет в индексе каждый файл списка, кроме
@@ -1254,7 +1279,7 @@ def violations(cwd):
 
     restored = restored_pr_base_paths(cwd, found)
     code_problems = [message for path, messages in found.items() if path not in restored for message in messages]
-    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd)
+    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + unread_internal(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd)
 
 
 def self_test():
@@ -1660,6 +1685,39 @@ def self_test():
         git("rm", "--", owner)
         assert not duplicate_save_stage(cwd), "Moving the single owner is allowed"
     print("duplicate-save-stage self-test ok")
+
+    with tempfile.TemporaryDirectory() as cwd:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+        def stage(path, source):
+            file = Path(cwd, path)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(source)
+            git("add", "--", path)
+
+        loader = "Assets/Code/StaticDataService.cs"
+        constants = ("class StaticDataService\n{\n    private const string SHOP_CONFIG_PATH = \"Configs/shop\";\n"
+                     "    internal const string ADJUST_CONFIG_PATH = \"Configs/adjust\";\n"
+                     "    private AdjustConfig Load() => Load(ADJUST_CONFIG_PATH);\n}\n")
+        git("init", "-q")
+        stage(loader, constants)
+        problems = unread_internal(cwd)
+        assert len(problems) == 1 and "ADJUST_CONFIG_PATH" in problems[0], problems
+        stage("Assets/Code/Tests/EditMode/AdjustConfigTests.cs", "Resources.Load(StaticDataService.ADJUST_CONFIG_PATH);\n")
+        assert not unread_internal(cwd), "A test reader in another file justifies internal"
+        stage(loader, constants.replace("internal const", "private const"))
+        git("rm", "-qf", "--", "Assets/Code/Tests/EditMode/AdjustConfigTests.cs")
+        assert not unread_internal(cwd)
+        stage(loader, "class Box\n{\n    internal sealed class Entry { }\n    internal int Count => _items.Count;\n"
+                      "    internal void Clear() { }\n}\n")
+        assert sorted(problem.split(": internal ")[1].split()[0] for problem in unread_internal(cwd)) == ["Clear", "Count"], \
+            "Nested types are not members"
+        stage("Assets/Code/Generated/Lookup.cs", "class Lookup\n{\n    internal const int Total = 1;\n}\n")
+        assert all("Generated" not in problem for problem in unread_internal(cwd))
+        stage("Assets/GoogleMobileAds/Editor/Utils.cs", "class Utils\n{\n    internal const string AndroidPluginsDir = \"Assets\";\n}\n")
+        assert all("GoogleMobileAds" not in problem for problem in unread_internal(cwd)), "Vendor SDK code is not ours"
+    print("unread-internal self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):

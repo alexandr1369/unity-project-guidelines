@@ -2,7 +2,8 @@
 # Хук Claude Code и Codex (UserPromptSubmit): по словам владельца кладёт агенту нужный раздел правил
 # из AI_COLLABORATION_GUIDELINES.md — правило понятных вопросов на просьбу дать вопросы к ГД или к себе,
 # список самопроверки на «перепроверь», выводы из замечаний при работе с ревью и фильтр материалов ГД на разговор о них.
-# К каждому сообщению кладёт заголовки раздела «Отложено из ГД» из TASKS.md, чтобы задачу сверяли с отложенным.
+# К каждому сообщению кладёт заголовки разделов «Отложено из ГД» и «Отложено из МР» из TASKS.md, чтобы задачу
+# сверяли с отложенным.
 # Туда же кладёт просроченный архитектурный аудит: счётчик читает audit_due.py, память ассистента его не ведёт.
 import json
 import os
@@ -18,7 +19,7 @@ QUESTIONS_SECTION = "## Вопросы геймдизайну и владель�
 SELF_CHECK_SECTION = "## Самопроверка перед отчётом"
 FEEDBACK_SECTION = "## Выводы из замечаний владельца"
 MATERIALS_SECTION = "## Что брать из материалов геймдизайна"
-DEFERRED_SECTION = "## Отложено из ГД"
+DEFERRED_SECTIONS = ("## Отложено из ГД", "## Отложено из МР")
 QUESTION = re.compile(r"вопрос", re.I)
 GAME_DESIGN = re.compile(r"(?<!\w)(?:г\.?д|gd|гэдэ)(?!\w)|геймдиз", re.I)
 MATERIALS = re.compile(r"карточк|trello|трелл|(?<!\w)тз(?!\w)", re.I)
@@ -69,17 +70,18 @@ def deferred_reminder(cwd):
     tasks = os.path.join(root, "TASKS.md") if root else ""
     if not os.path.isfile(tasks):
         return ""
-    titles = []
-    inside = False
+    titles = {section: [] for section in DEFERRED_SECTIONS}
+    current = None
     for line in open(tasks, encoding="utf-8"):
         if line.startswith("## "):
-            inside = line.strip() == DEFERRED_SECTION
-        elif inside and line.startswith("### "):
-            titles.append(line[4:].strip())
-    if not titles:
+            current = titles.get(line.strip())
+        elif current is not None and line.startswith("### "):
+            current.append(line[4:].strip())
+    found = [f"{section[3:]} в TASKS.md: " + "; ".join(entries) for section, entries in titles.items() if entries]
+    if not found:
         return ""
-    return ("Отложено из ГД в TASKS.md: " + "; ".join(titles) + ". Если задача касается записи, сделай её в этой задаче целиком "
-            "и удали запись тем же МР — AI_COLLABORATION_GUIDELINES.md, «Что брать из материалов геймдизайна».")
+    return (". ".join(found) + ". Если задача касается записи, сделай её в этой задаче целиком и удали запись тем же МР — "
+            "AI_COLLABORATION_GUIDELINES.md, «Что брать из материалов геймдизайна» и «Список задач».")
 
 
 data = json.load(sys.stdin)
