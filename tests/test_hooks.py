@@ -845,6 +845,7 @@ class HookTests(unittest.TestCase):
                                       tool_response={"exit_code": 0}))["hookSpecificOutput"]
         self.assertIn("Влитые ветки на сервере", output["additionalContext"])
         self.assertIn("origin/alex/feature", output["additionalContext"])
+        self.assertIn("без вопроса владельцу", output["additionalContext"])
         self.assertNotIn("gitlab/main", output["additionalContext"])
 
 

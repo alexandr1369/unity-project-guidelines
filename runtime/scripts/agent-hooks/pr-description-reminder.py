@@ -136,8 +136,9 @@ def merged_branches_note(cwd):
     if local:
         notes.append("Влитые локальные ветки — удали `git branch -d`: " + ", ".join(local) + ".")
     if remote:
-        notes.append("Влитые ветки на сервере — удаление `git push origin --delete` только со словом владельца, спроси: "
-                     + ", ".join(remote) + ".")
+        notes.append("Влитые ветки на сервере — сначала `git fetch --prune`: ветки, которые автоудаление уже сняло, уйдут сами. "
+                     "Оставшиеся на сервере удали сам `git push origin --delete`, без вопроса владельцу, если на ветку не смотрит "
+                     "base открытого PR: " + ", ".join(remote) + ".")
     return " ".join(notes)
 
 
