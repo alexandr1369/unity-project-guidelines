@@ -1031,6 +1031,36 @@ def vendor_package_files(cwd):
     return found
 
 
+def foreign_app_config(cwd):
+    # INTEGRATION_GUIDELINES.md, «Установка SDK»: файл приложения из кабинета Firebase (`google-services.json`,
+    # `GoogleService-Info.plist`) относится к одному приложению. Коммит, который трогает такой файл или настройки
+    # проекта Unity, оставляет в индексе только файлы с Android- или iOS-идентификатором этого проекта.
+    staged = set(run(["git", "diff", "--cached", "--name-only", "--no-renames", "-z"], cwd).split("\0"))
+    indexed = run(["git", "ls-files", "--cached", "-z"], cwd).split("\0")
+    found = []
+    for settings in (path for path in indexed if path.endswith("ProjectSettings/ProjectSettings.asset")):
+        root = settings[:-len("ProjectSettings/ProjectSettings.asset")]
+        configs = [path for path in indexed if path.startswith(root + "Assets/")
+                   and path.rsplit("/", 1)[-1] in ("google-services.json", "GoogleService-Info.plist")]
+        if settings not in staged and not staged.intersection(configs):
+            continue
+
+        block = re.search(r"^  applicationIdentifier:\n((?:    .*\n)*)", run(["git", "show", f":{settings}"], cwd), re.M)
+        identifiers = dict(re.findall(r"^    (\w+): (\S+)$", block.group(1), re.M)) if block else {}
+        for config in configs:
+            text = run(["git", "show", f":{config}"], cwd)
+            if config.endswith(".json"):
+                clients = json.loads(text).get("client", [])
+                names = {client.get("client_info", {}).get("android_client_info", {}).get("package_name") for client in clients}
+                expected = identifiers.get("Android")
+            else:
+                names = set(re.findall(r"<key>BUNDLE_ID</key>\s*<string>([^<]*)</string>", text))
+                expected = identifiers.get("iPhone")
+            if expected and expected not in names:
+                found.append(f"{config}: файл приложения {', '.join(sorted(filter(None, names)))}, а у проекта {expected}: "
+                             f"ключи и файлы из кабинетов добавляй при регистрации этого приложения, чужие убери")
+    return found
+
 def ecs_group_usage(lines, added):
     # OPTIONAL_ENTITAS.md: у Entity-итератора доменное имя.
     source = blank_literals("\n".join(lines))
@@ -1224,7 +1254,7 @@ def violations(cwd):
 
     restored = restored_pr_base_paths(cwd, found)
     code_problems = [message for path, messages in found.items() if path not in restored for message in messages]
-    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + vendor_package_files(cwd)
+    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd)
 
 
 def self_test():
@@ -1667,6 +1697,45 @@ def self_test():
         stage(project + "Assets/Plugins/Firebase/Plugins/x86_64/FirebaseCppApp-13_2_0.bundle", "")
         assert not vendor_package_files(cwd), "A package moved under Assets/Plugins keeps its files"
     print("vendor-package-files self-test ok")
+
+    with tempfile.TemporaryDirectory() as cwd:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+        def stage(path, source):
+            file = Path(cwd, path)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(source)
+            git("add", "--", path)
+
+        settings = "src/game/ProjectSettings/ProjectSettings.asset"
+        android, ios = "src/game/Assets/google-services.json", "src/game/Assets/GoogleService-Info.plist"
+
+        def identifiers(name):
+            return f"PlayerSettings:\n  applicationIdentifier:\n    Android: {name}\n    iPhone: {name}.ios\n  buildNumber:\n"
+
+        def client(name):
+            return json.dumps({"client": [{"client_info": {"android_client_info": {"package_name": name}}}]})
+
+        git("init", "-q")
+        stage(settings, identifiers("com.studio.game"))
+        stage(android, client("com.studio.other"))
+        assert foreign_app_config(cwd) == [f"{android}: файл приложения com.studio.other, а у проекта com.studio.game: "
+                                           f"ключи и файлы из кабинетов добавляй при регистрации этого приложения, чужие убери"]
+        stage(android, client("com.studio.game"))
+        stage(ios, "<dict>\n\t<key>BUNDLE_ID</key>\n\t<string>com.studio.other</string>\n</dict>\n")
+        assert [problem.split(":")[0] for problem in foreign_app_config(cwd)] == [ios]
+        stage(ios, "<dict>\n\t<key>BUNDLE_ID</key>\n\t<string>com.studio.game.ios</string>\n</dict>\n")
+        assert not foreign_app_config(cwd), "Files of this application pass"
+        git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+            "commit", "-qm", "Fixture")
+        stage("src/game/Assets/Code/Example.cs", "")
+        assert not foreign_app_config(cwd), "Commits outside the settings and the files are not checked"
+        stage(settings, identifiers("com.studio.renamed"))
+        assert len(foreign_app_config(cwd)) == 2, "Changing the identifiers checks the files left in the project"
+        git("rm", "-q", "--", android, ios)
+        assert not foreign_app_config(cwd), "Removing the files of the old application is allowed"
+    print("foreign-app-config self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):
