@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # Хук Claude Code и Codex (UserPromptSubmit): по словам владельца кладёт агенту нужный раздел правил
 # из AI_COLLABORATION_GUIDELINES.md — правило понятных вопросов на просьбу дать вопросы к ГД или к себе,
-# список самопроверки на «перепроверь» и выводы из замечаний при работе с ревью. Туда же кладёт просроченный архитектурный аудит:
-# счётчик читает audit_due.py, память ассистента его не ведёт.
+# список самопроверки на «перепроверь», выводы из замечаний при работе с ревью и фильтр материалов ГД на разговор о них.
+# К каждому сообщению кладёт заголовки раздела «Отложено из ГД» из TASKS.md, чтобы задачу сверяли с отложенным.
+# Туда же кладёт просроченный архитектурный аудит: счётчик читает audit_due.py, память ассистента его не ведёт.
 import json
 import os
 import re
@@ -16,8 +17,11 @@ from tracker_reminder import tracker_reminder
 QUESTIONS_SECTION = "## Вопросы геймдизайну и владельцу"
 SELF_CHECK_SECTION = "## Самопроверка перед отчётом"
 FEEDBACK_SECTION = "## Выводы из замечаний владельца"
+MATERIALS_SECTION = "## Что брать из материалов геймдизайна"
+DEFERRED_SECTION = "## Отложено из ГД"
 QUESTION = re.compile(r"вопрос", re.I)
 GAME_DESIGN = re.compile(r"(?<!\w)(?:г\.?д|gd|гэдэ)(?!\w)|геймдиз", re.I)
+MATERIALS = re.compile(r"карточк|trello|трелл|(?<!\w)тз(?!\w)", re.I)
 QUESTIONS = re.compile(r"вопрос(?:ы|ов|ам|ами|ах)", re.I)
 REQUEST = re.compile(r"дай|кинь|кидай|закин|отда|продублир|составь|собер|запиши|задавай|задай|остал|какие|сократи|перепиш", re.I)
 SELF_CHECK = re.compile(r"перепров|провер\w* себя|сам себя провер", re.I)
@@ -60,18 +64,43 @@ def section(title):
     return "\n".join(rules).strip()
 
 
+def deferred_reminder(cwd):
+    root = audit_due.git_output(["git", "rev-parse", "--show-toplevel"], cwd)
+    tasks = os.path.join(root, "TASKS.md") if root else ""
+    if not os.path.isfile(tasks):
+        return ""
+    titles = []
+    inside = False
+    for line in open(tasks, encoding="utf-8"):
+        if line.startswith("## "):
+            inside = line.strip() == DEFERRED_SECTION
+        elif inside and line.startswith("### "):
+            titles.append(line[4:].strip())
+    if not titles:
+        return ""
+    return ("Отложено из ГД в TASKS.md: " + "; ".join(titles) + ". Если задача касается записи, сделай её в этой задаче целиком "
+            "и удали запись тем же МР — AI_COLLABORATION_GUIDELINES.md, «Что брать из материалов геймдизайна».")
+
+
 data = json.load(sys.stdin)
 prompt = data.get("prompt") or ""
 reminders = []
 session = data.get("session_id") or data.get("sessionId") or ""
-audit = audit_due.context(data.get("cwd") or os.getcwd(), session, refresh=False, repeat=False)
+cwd = data.get("cwd") or os.getcwd()
+audit = audit_due.context(cwd, session, refresh=False, repeat=False)
 if audit:
     reminders.append(audit)
+deferred = deferred_reminder(cwd)
+if deferred:
+    reminders.append(deferred)
 if reports_pr_completion(prompt):
     reminders.append(tracker_reminder())
 if asks_questions(prompt):
     reminders.append("Владелец просит вопросы. Каждый вопрос до отдачи проверь по правилам ниже глазами ГД, который видит его впервые.\n\n"
                      + section(QUESTIONS_SECTION))
+if GAME_DESIGN.search(prompt) or MATERIALS.search(prompt):
+    reminders.append("Речь о материалах ГД. Каждый пункт пропусти через фильтр ниже: нужное сейчас — лёгким способом, остальное — в отложенное.\n\n"
+                     + section(MATERIALS_SECTION))
 if SELF_CHECK.search(prompt):
     reminders.append("Владелец просит перепроверить. Пройди список ниже по итоговому диффу целиком, с первого пункта, и назови, что нашлось.\n\n"
                      + section(SELF_CHECK_SECTION))

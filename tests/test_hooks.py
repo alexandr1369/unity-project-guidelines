@@ -209,6 +209,21 @@ class HookTests(unittest.TestCase):
     def test_unrelated_prompt_does_not_inject_rule_update_instructions(self):
         self.assertEqual(self.hook("", script="prompt-reminders.py", prompt="Покажи текущий баланс гемов"), "")
 
+    def test_every_prompt_lists_deferred_game_design_entries(self):
+        (self.repo / "TASKS.md").write_text("# Задачи\n\n## Отложено из ГД\n\n### Тех-ошибки: восемь видов без проверок, 23.11.2026\n\n"
+                                            "- Что хотел ГД: ...\n\n## Ответы геймдизайна\n\n### Аналитика, 23 ноября 2026\n", encoding="utf-8")
+        context = json.loads(self.hook("", script="prompt-reminders.py", prompt="Покажи текущий баланс гемов"))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Тех-ошибки: восемь видов без проверок, 23.11.2026", context)
+        self.assertNotIn("Аналитика, 23 ноября 2026", context)
+        self.assertNotIn("## Что брать из материалов геймдизайна", context)
+
+    def test_game_design_materials_inject_selection_filter(self):
+        for prompt in ("ГД прислал таблицу аналитики", "Возьми карточку из трелло", "По ТЗ нужен новый конфиг"):
+            with self.subTest(prompt=prompt):
+                context = json.loads(self.hook("", script="prompt-reminders.py", prompt=prompt))["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("## Что брать из материалов геймдизайна", context)
+                self.assertIn("Отложено из ГД", context)
+
     def test_successful_commit_without_new_names_injects_self_check(self):
         self.stage(VALID.replace("Initialize() { }", "Initialize() { base.Initialize(); }"))
         self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
