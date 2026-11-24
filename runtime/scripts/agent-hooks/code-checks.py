@@ -1025,7 +1025,8 @@ def noneof_marker(cwd):
     for path in changed:
         code[path] = run(["git", "show", f":{path}"], cwd)
     return [f"{path}:{number}: {message}" for path, number, message in
-            [*noneof_problems(code, changed), *destructed_filter_problems(code, changed), *group_kind_problems(code, changed)]]
+            [*noneof_problems(code, changed), *destructed_filter_problems(code, changed), *group_kind_problems(code, changed),
+              *record_component_problems(code, changed)]]
 
 
 def system_direct_save(cwd):
@@ -1217,6 +1218,29 @@ def data_components(code):
             if re.search(r"\bpublic\s+[\w<>\[\],.? ]+\s+\w+\s*[;=]", match.group(2)):
                 found.add(match.group(1))
     return found
+
+
+def record_component_problems(code, changed):
+    # OPTIONAL_ENTITAS.md, «Канон именования»: значение компонента — один факт. Компонент, чей Value — свой класс или
+    # структура из нескольких полей, хранит запись: её раскладывают на компоненты, и в запросе тоже. Запись допустима
+    # только элементом списка (List<BroomMove>, List<EffectSetup>), поэтому списки и массивы не проверяются, как и view.
+    records = {}
+    for text in code.values():
+        source = blank_literals(text)
+        for match in re.finditer(r"\b(?:class|struct)\s+(\w+)\b([^{;]*)\{", source):
+            if re.search(r"\bI\w*Component\b|MonoBehaviour|ScriptableObject", match.group(2)):
+                continue
+            body = source[match.end():block_end(source, match.end())]
+            fields = re.findall(r"\bpublic\s+(?!static\b|const\b|override\b|virtual\b|abstract\b)[\w.<>\[\],? ]+?\s+\w+\s*(?:;|=|\{\s*get)", body)
+            records.setdefault(match.group(1), len(fields))
+    for path, added in changed.items():
+        source = blank_literals(code[path])
+        for match in re.finditer(r"\bclass\s+(\w+)\s*:[^{]*\bI\w*Component\b[^{]*\{\s*public\s+([\w.]+)\??\s+Value\s*;", source):
+            start, end = source.count("\n", 0, match.start()) + 1, source.count("\n", 0, match.end()) + 1
+            record = match.group(2).split(".")[-1]
+            if records.get(record, 0) >= 2 and added.intersection(range(start, end + 1)):
+                yield path, start, (f"{match.group(1)} хранит запись {record} из {records[record]} полей: каждый факт сделай своим "
+                                    "компонентом, запись допустима только элементом списка")
 
 
 def group_kind_problems(code, changed):
@@ -1595,6 +1619,19 @@ def self_test():
     assert not kind(attempt.replace("_levelAttempts", "_levelProgress")), "A group named after its kind passes"
     assert not kind("_animatingSlots = game.GetGroup(GameMatcher.AllOf(GameMatcher.Slot, GameMatcher.Animating));"), "A state qualifier is a review matter"
     print("group-kind self-test ok")
+
+    record_code = {"Assets/Code/Meta/ShopComponents.cs": ("[Meta] public class ShopProductPurchasedRequest : IComponent { public ShopPurchaseData Value; }\n"
+                                                         "[Meta] public class Gems : ISavedComponent { public int Value; }\n"
+                                                         "[Game] public class UseBroomRequest : IComponent { public List<BroomMove> Value; }\n"
+                                                         "[Game] public class CoinAnimator : IComponent { public CoinAnimator Value; }\n"
+                                                         "[Game] public class BoardSlots : IComponent { public BoardSlot[] Value; }"),
+                   "Assets/Code/Meta/ShopPurchaseData.cs": "public class ShopPurchaseData\n{\n    public string ProductId;\n    public string OrderId;\n}",
+                   "Assets/Code/Gameplay/BroomMove.cs": "public class BroomMove { public int CoinId; public int ToSlotId; }",
+                   "Assets/Code/Gameplay/CoinAnimator.cs": "public class CoinAnimator : MonoBehaviour { public float Speed; public float Delay; }"}
+    found = list(record_component_problems(record_code, {"Assets/Code/Meta/ShopComponents.cs": {1, 2, 3, 4, 5}}))
+    assert [(line, "ShopPurchaseData из 2 полей" in message) for _, line, message in found] == [(1, True)], found
+    assert not list(record_component_problems(record_code, {"Assets/Code/Meta/ShopComponents.cs": {2, 3, 4, 5}})), "Values, lists, arrays and views pass"
+    print("record-component self-test ok")
 
     def noneof(code, path):
         return [message for _, _, message in noneof_problems(code, {path: set(range(1, 50))})]
