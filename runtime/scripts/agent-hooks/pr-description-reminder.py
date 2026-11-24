@@ -4,7 +4,8 @@
 # После успешного git commit напоминает самопроверку итогового diff, перечисляет новые типы, публичные поля и свойства
 # коммита и просит назвать, откуда взято каждое слово (CODE_STYLE.md).
 # Напоминает снова, пока описание не обновлено или сверка не отмечена: pr-description-reminder.py --checked <номер PR>...
-# После gh pr merge напоминает синхронизацию из GIT_WORKFLOW.md, «После merge».
+# После gh pr merge напоминает синхронизацию из GIT_WORKFLOW.md, «После merge», а после fetch и pull — переключить
+# checkout владельца на следующий PR, если он стоит на влитой ветке.
 import json
 import os
 import re
@@ -17,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import audit_due
 from command_directory import GIT, START, command_directory
 from guidelines_path import guidelines_path
-from tracker_reminder import tracker_reminder
+from merge_reminders import next_review_reminder, tracker_reminder
 
 QUERY = """query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:30){nodes{
 number title body createdAt lastEditedAt baseRefName headRefName}}}}"""
@@ -142,6 +143,23 @@ def merged_branches_note(cwd):
     return " ".join(notes)
 
 
+def owner_on_merged_branch_note(sync_cwd, session_cwd):
+    # GIT_WORKFLOW.md, «После merge»: checkout владельца — основной worktree папки сессии. Влитость проверяем по свежим
+    # ссылкам папки, где прошёл fetch: в checkout владельца origin/main мог ещё не обновиться.
+    worktrees = run(["git", "worktree", "list", "--porcelain"], session_cwd).stdout.splitlines()
+    owner = worktrees[0][len("worktree "):] if worktrees and worktrees[0].startswith("worktree ") else ""
+    if not os.path.isdir(owner):
+        return ""
+    branch = run(["git", "symbolic-ref", "-q", "--short", "HEAD"], owner).stdout.strip()
+    head = run(["git", "rev-parse", "-q", "--verify", "HEAD"], owner).stdout.strip()
+    main = run(["git", "rev-parse", "-q", "--verify", "origin/main"], sync_cwd).stdout.strip()
+    if branch in ("", "main") or not head or not main or head == main:
+        return ""
+    if run(["git", "merge-base", "--is-ancestor", head, main], sync_cwd).returncode != 0:
+        return ""
+    return f"Checkout владельца {owner} стоит на влитой ветке {branch}. " + next_review_reminder()
+
+
 def workflow_rules():
     workflow = guidelines_path("GIT_WORKFLOW.md")
     rules = []
@@ -205,17 +223,19 @@ if is_merge and not is_push and not is_pr_create and not is_commit:
     merge_cwd = command_directory(command[:is_merge.end()], cwd)
     merge_text = with_audit(
         merge_cwd,
-        "Команда merge завершилась успешно; проверь фактическое слияние PR. Если статус PR — MERGED, до ответа владельцу синхронизируй (GIT_WORKFLOW.md, «После merge»): локальный main — "
-        "сначала `git checkout main`, затем `git pull --ff-only` и `git fetch --prune`; влитую task-ветку удали, проверив "
-        "`git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout пересобери csproj.\n\n"
-        + tracker_reminder(),
+        "Команда merge завершилась успешно; проверь фактическое слияние PR. Если статус PR — MERGED, первым шагом переключи checkout "
+        "владельца на следующий PR, затем до ответа владельцу синхронизируй (GIT_WORKFLOW.md, «После merge»): локальный main — "
+        "`git fetch origin main:main`, а без следующего PR `git checkout main` и `git pull --ff-only`; `git fetch --prune`; влитую "
+        "task-ветку удали, проверив `git log origin/main..<ветка>`; в дочерние PR влей origin/main и запушь; для ветки checkout "
+        "пересобери csproj.\n\n"
+        + next_review_reminder() + "\n\n" + tracker_reminder(),
         data.get("session_id") or data.get("sessionId") or "")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": merge_text}},
                      ensure_ascii=False))
     sys.exit(0)
 if is_sync and not is_push and not is_pr_create and not is_commit:
     sync_cwd = command_directory(command[:is_sync.end()], cwd)
-    notes = [merged_branches_note(sync_cwd), tracker_reminder()]
+    notes = [owner_on_merged_branch_note(sync_cwd, data.get("cwd") or cwd), merged_branches_note(sync_cwd), tracker_reminder()]
     note = with_audit(sync_cwd, "\n\n".join(note for note in notes if note), data.get("session_id") or data.get("sessionId") or "")
     if note:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}, ensure_ascii=False))

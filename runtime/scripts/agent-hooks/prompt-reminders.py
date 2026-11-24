@@ -4,6 +4,7 @@
 # список самопроверки на «перепроверь», выводы из замечаний при работе с ревью и фильтр материалов ГД на разговор о них.
 # К каждому сообщению кладёт заголовки разделов «Отложено из ГД» и «Отложено из МР» из TASKS.md, чтобы задачу
 # сверяли с отложенным.
+# На сообщение о слиянии кладёт переключение владельца на следующий PR первым шагом и сверку карточек.
 # Туда же кладёт просроченный архитектурный аудит: счётчик читает audit_due.py, память ассистента его не ведёт.
 import json
 import os
@@ -13,7 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import audit_due
 from guidelines_path import guidelines_path
-from tracker_reminder import tracker_reminder
+from merge_reminders import next_review_reminder, tracker_reminder
 
 QUESTIONS_SECTION = "## Вопросы геймдизайну и владельцу"
 SELF_CHECK_SECTION = "## Самопроверка перед отчётом"
@@ -96,6 +97,7 @@ deferred = deferred_reminder(cwd)
 if deferred:
     reminders.append(deferred)
 if reports_pr_completion(prompt):
+    reminders.append(next_review_reminder())
     reminders.append(tracker_reminder())
 if asks_questions(prompt):
     reminders.append("Владелец просит вопросы. Каждый вопрос до отдачи проверь по правилам ниже глазами ГД, который видит его впервые.\n\n"
