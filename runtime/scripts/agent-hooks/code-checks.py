@@ -205,6 +205,56 @@ def component_value_initializer(lines, added):
             yield number, "у поля Value компонента инициализатор: убери, значение приходит через Add/Replace"
 
 
+RECORD_COPY = re.compile(r"(?:\b[\w.<>\[\],?]+|\bvar)\s+(\w+)\s*=\s*(\w+)\s*\.\s*([A-Z]\w*)\s*;")
+RECORD_LOCAL = re.compile(r"\b(\w+)\s*=\s*new\b[\w\s.<>,()]*?\{([^{}]*)\}\s*;")
+RECORD_ARGUMENT = re.compile(r"\.\s*(?:Add|Replace)([A-Z]\w*)\s*\(\s*new\b[\w\s.<>,()]*?\{([^{}]*)\}\s*\)")
+RECORD_FIELD = r"[A-Z]\w*\s*(?:\+\+|--|[-+*/%|&^]?=(?!=))"
+
+
+def block_end(source, start):
+    depth = 0
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            if not depth:
+                return index
+            depth -= 1
+    return len(source)
+
+
+def component_record(lines, added):
+    # OPTIONAL_ENTITAS.md, «Канон именования»: значение компонента — один факт. Запись из нескольких полей в Value
+    # раскладывают на компоненты: с ней система, меняющая одно поле, читает запись, правит копию и кладёт обратно целиком,
+    # а сборка записи прямо в Add/Replace прячет несколько фактов за одним. Запись элементом списка (List<BroomMove>) — норма.
+    source = blank_literals("\n".join(lines))
+
+    def line(position):
+        return source.count("\n", 0, position) + 1
+
+    for match in RECORD_COPY.finditer(source):
+        variable, entity, component = match.groups()
+        end = block_end(source, match.end())
+        replace = re.compile(rf"\b{entity}\s*\.\s*Replace{component}\s*\(\s*{variable}\s*\)").search(source, match.end(), end)
+        change = replace and re.compile(rf"\b{variable}\s*\.\s*{RECORD_FIELD}|(?:\+\+|--)\s*{variable}\s*\.\s*[A-Z]").search(
+            source, match.end(), replace.start())
+        if change and added.intersection({line(match.start()), line(change.start()), line(replace.start())}):
+            yield line(replace.start()), (f"{component} хранит запись, а код меняет одно её поле и кладёт запись обратно: "
+                                          "каждый факт записи сделай своим компонентом")
+    records = [(match.group(1), match.start(), match.group(2)) for match in RECORD_LOCAL.finditer(source)]
+    records += [(None, match.start(), match.group(2)) for match in RECORD_ARGUMENT.finditer(source)]
+    for variable, start, fields in records:
+        if len(re.findall(r"(?:^|,)\s*[A-Z]\w*\s*=(?!=)", fields)) < 2:
+            continue
+        if variable:
+            use = re.compile(rf"\.\s*(?:Add|Replace)([A-Z]\w*)\s*\(\s*{variable}\s*\)").search(source, start, block_end(source, start))
+        else:
+            use = RECORD_ARGUMENT.match(source, start)
+        if use and added.intersection({line(start), line(use.start())}):
+            yield line(use.start()), (f"{use.group(1)} получает запись из нескольких полей: каждый факт сделай своим компонентом, "
+                                      "запись допустима только элементом списка")
+
+
 def top_level_expression(expression):
     nesting, result = [], []
     for character in expression:
@@ -1188,7 +1238,7 @@ def group_kind_problems(code, changed):
 
 
 CHECKS = (return_spacing, config_extension, component_name, expression_wrapping, request_before_save,
-          single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
+          single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer, component_record,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
           ecs_group_iterators, expression_body_line)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher)
@@ -1510,8 +1560,28 @@ def self_test():
     assert not list(ecs_group_iterators(iterators, {1, 6, 7, 8, 9})), "Matching names, a nested pair and untouched lines pass"
     print("ecs-group-iterators self-test ok")
 
+    records = ["LevelAttemptData levelAttempt = levelProgress.LevelAttempt;",
+               "levelAttempt.Deals++;",
+               "levelProgress.ReplaceLevelAttempt(levelAttempt);",
+               "LevelAttemptData nextAttempt = new() { Number = 2, StartTimeUtc = now };",
+               "levelProgress.ReplaceLevelAttempt(nextAttempt);",
+               "levelProgress.AddLevelAttempt(new LevelAttemptData { Number = 1, StartTimeUtc = now });",
+               "Vector3 position = coin.WorldPosition;",
+               "position.y = 0;",
+               "coin.ReplaceWorldPosition(position);",
+               "List<int> coins = slot.SlotCoins;",
+               "coins.Add(3);",
+               "slot.ReplaceSlotCoins(coins);",
+               "request.AddUseBroomRequest(new List<BroomMove> { new BroomMove { CoinId = 1, ToSlotId = 2 } });",
+               "levelProgress.ReplaceLevelAttemptDeals(levelProgress.LevelAttemptDeals + 1);"]
+    found = list(component_record(records, set(range(1, len(records) + 1))))
+    assert [line for line, _ in found] == [3, 5, 6], found
+    assert [line for line, _ in component_record(records, {2})] == [3], "A changed field line flags its Replace"
+    assert not list(component_record(records, set(range(7, len(records) + 1)))), "Vector fields, list changes, list records and one-fact components pass"
+    print("component-record self-test ok")
+
     components = {"Assets/Code/Meta/LevelProgressComponents.cs": ("[Meta] public class LevelProgress : IComponent { }\n"
-                                                                    "[Meta] public class LevelAttempt : ISavedComponent { public LevelAttemptData Value; }\n"
+                                                                    "[Meta] public class LevelAttempt : ISavedComponent { public int Value; }\n"
                                                                     "[Game] public class Slot : IComponent { }\n"
                                                                     "[Game] public class Animating : IComponent { }")}
     system = "Assets/Code/Gameplay/CountSystem.cs"
@@ -1534,7 +1604,7 @@ def self_test():
     assert not noneof(reached, start), "A flag set by the excluding feature is a leaf, even if another feature clears it"
     attempt = {start: ("_levelProgress = meta.GetGroup(MetaMatcher.AllOf(MetaMatcher.LevelProgress).NoneOf(MetaMatcher.LevelAttempt));\n"
                        "levelProgress.AddLevelAttempt(attempt);"),
-               "Assets/Code/Meta/LevelProgressComponents.cs": "[Meta] public class LevelAttempt : ISavedComponent { public LevelAttemptData Value; }"}
+               "Assets/Code/Meta/LevelProgressComponents.cs": "[Meta] public class LevelAttempt : ISavedComponent { public int Value; }"}
     assert "NoneOf(LevelAttempt)" in noneof(attempt, start)[0], "A data component is entity state, not a done-marker"
     waiting = {start: "_levelProgress = meta.GetGroup(MetaMatcher.AllOf(MetaMatcher.LevelProgress).NoneOf(MetaMatcher.LevelStartRequired));",
                "Assets/Code/Level/Systems/FinishLevelStartSystem.cs": "levelProgress.isLevelStartRequired = false;",
