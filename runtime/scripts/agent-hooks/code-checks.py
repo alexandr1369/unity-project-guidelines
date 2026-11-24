@@ -752,14 +752,16 @@ def noneof_clauses(text):
 
 def code_feature(path):
     folder = os.path.dirname(path)
-    return os.path.dirname(folder) if os.path.basename(folder) == "Systems" else folder
+    return os.path.dirname(folder) if os.path.basename(folder) in ("Systems", "Factory", "Extensions") else folder
 
 
 def noneof_problems(code, changed):
-    # OPTIONAL_ENTITAS.md, «Системы»: NoneOf — по маркеру «уже сделано», который ставят и исключают системы
-    # одной фичи, по идущему процессу (…ing, …Processing) или у близнецов одного модуля: одна система берёт AllOf(X),
-    # другая NoneOf(X), а X — вид сущности, его нигде не снимают. Маркер, который исключают в фиче, где его не ставят
-    # и где нет близнеца, — фильтр «кто в выборке» (выход из игры): только положительным <Субъект>Active в AllOf.
+    # OPTIONAL_ENTITAS.md, «Системы»: NoneOf — по флагу «уже сделано», который ставит сама исключающая фича,
+    # по идущему процессу (…ing, …Processing) или у близнецов одного модуля: одна система берёт AllOf(X), другая
+    # NoneOf(X), а X — вид сущности, его нигде не снимают. Снятие (= false, Remove) фичу владельцем флага не делает:
+    # LevelStartRequired снимает Level, а ставит LevelVictory. Компонент с данными (LevelAttempt) — состояние сущности,
+    # его меняют и другие фичи: решение «уже есть» — проверкой в теле. Флаг, который исключают в фиче, где его
+    # не ставят и где нет близнеца, — фильтр «кто в выборке» (выход из игры): положительным <Субъект>Active в AllOf.
     # View ставит фабрика вида, у Destructed отдельное правило.
     excluders, includers = {}, {}
     for path, text in code.items():
@@ -769,7 +771,7 @@ def noneof_problems(code, changed):
         for _, _, components in matcher_clauses(text, "AllOf"):
             for component in components:
                 includers.setdefault(component, set()).add(code_feature(path))
-    verdicts = {}
+    verdicts, data = {}, None
     for path, added in changed.items():
         for start, end, components in noneof_clauses(code[path]):
             if not added.intersection(range(start, end + 1)):
@@ -778,13 +780,18 @@ def noneof_problems(code, changed):
                 if component in ("View", "Destructed") or PROCESS_MARKER.search(component):
                     continue
                 if component not in verdicts:
-                    setter = re.compile(rf"\bis{component}\s*=\s*\w+|\.(Add|Replace){component}\(")
+                    setter = re.compile(rf"\bis{component}\s*=\s*(?!false\b)\w+|\.(Add|Replace){component}\(")
                     remover = re.compile(rf"\bis{component}\s*=\s*false\b|\.Remove{component}\(")
-                    features = {code_feature(other) for other, text in code.items() if setter.search(text)}
+                    data = data_components(code) if data is None else data
+                    setters = {code_feature(other) for other, text in code.items() if setter.search(text)}
                     twins = includers.get(component, set()) if not any(remover.search(text) for text in code.values()) else set()
-                    verdicts[component] = all(code_feature(other) in features | twins for other in excluders[component])
+                    flag = component not in data
+                    verdicts[component] = all(feature in twins or flag and feature in setters
+                                              for feature in {code_feature(other) for other in excluders[component]})
                 if not verdicts[component]:
-                    yield path, start, f"NoneOf({component}) — маркер исключают и вне фичи, где его ставят, а близнеца с AllOf в этом модуле нет: это фильтр «кто в выборке»: выход из игры — положительным <Субъект>Active в AllOf, «ещё не» и правило игры — проверкой в теле"
+                    yield path, start, (f"NoneOf({component}) — это не флаг «уже сделано» своей фичи: компонент с данными или флаг ставят вне фичи, "
+                                        "где его исключают, а близнеца с AllOf в этом модуле нет. Решение системы («уже есть», «ещё ждём») — "
+                                        "проверкой в теле по выборке AllOf, выход из игры — положительным <Субъект>Active в AllOf")
 
 
 def blank_literals(source):
@@ -966,7 +973,8 @@ def noneof_marker(cwd):
             code[path] = open(os.path.join(cwd, path), encoding="utf-8-sig", errors="ignore").read()
     for path in changed:
         code[path] = run(["git", "show", f":{path}"], cwd)
-    return [f"{path}:{number}: {message}" for path, number, message in [*noneof_problems(code, changed), *destructed_filter_problems(code, changed)]]
+    return [f"{path}:{number}: {message}" for path, number, message in
+            [*noneof_problems(code, changed), *destructed_filter_problems(code, changed), *group_kind_problems(code, changed)]]
 
 
 def system_direct_save(cwd):
@@ -1107,10 +1115,82 @@ def ecs_group_usage(lines, added):
                 yield start, message
 
 
+def singular(word):
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if word.endswith(("sses", "shes", "ches", "xes", "zes", "oes", "uses")):
+        return word[:-2]
+    return word[:-1] if word.endswith("s") and not word.endswith(("ss", "us")) else word
+
+
+def camel_tail(name):
+    return re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", name)[-1].lower()
+
+
+def group_matchers(source):
+    for match in re.finditer(r"\b(_\w+)\s*=\s*\w+\s*\.\s*GetGroup\s*\(", source):
+        close = closing(source, match.end() - 1)
+        matcher = source[match.end():close]
+        allof = [component for _, _, components in matcher_clauses(matcher, "AllOf") for component in components]
+        components = allof or ([] if "NoneOf" in matcher else re.findall(r"\w+Matcher\s*\.\s*(\w+)", matcher)[:1])
+        yield match.group(1), source.count("\n", 0, match.start()) + 1, source.count("\n", 0, close) + 1, components
+
+
+def ecs_group_iterators(lines, added):
+    # OPTIONAL_ENTITAS.md, «Именование»: итератор — имя выборки в единственном числе. _levelAttempts с итератором
+    # levelProgress называет одну сущность двумя именами. Пара вложенных обходов одной выборки называет итераторы по роли.
+    source = blank_literals("\n".join(lines))
+    groups = set(re.findall(r"\bIGroup\s*<\s*(?:\w+\.)*\w*Entity\s*>\s+(\w+)\b", source))
+    iterators = {}
+    for match in re.finditer(r"\bforeach\s*\(\s*(?:(?:\w+\.)*\w*Entity|var)\s+(\w+)\s+in\s+(?:this\s*\.\s*)?(_\w+)\b", source):
+        if match.group(2) in groups:
+            iterators.setdefault(match.group(2), []).append((match.group(1), source.count("\n", 0, match.start()) + 1))
+    for name, uses in iterators.items():
+        base = name.lstrip("_")
+        if len({iterator for iterator, _ in uses}) > 1:
+            continue
+        for iterator, line in uses:
+            if singular_words(iterator) != singular_words(base) and iterator.strip("_") and line in added:
+                yield line, (f"итератор {iterator} у выборки {name}: итератор — имя выборки в единственном числе ({singular(base)}); "
+                             "если перебираешь другую сущность, назови выборку по её виду")
+
+
+def singular_words(name):
+    return "".join(singular(word.lower()) for word in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", name))
+
+
+def data_components(code):
+    found = set()
+    for text in code.values():
+        for match in re.finditer(r"\bclass\s+(\w+)\s*:\s*[^{;]*\bI\w*Component\b[^{;]*\{([^{}]*)\}", blank_literals(text)):
+            if re.search(r"\bpublic\s+[\w<>\[\],.? ]+\s+\w+\s*[;=]", match.group(2)):
+                found.add(match.group(1))
+    return found
+
+
+def group_kind_problems(code, changed):
+    # OPTIONAL_ENTITAS.md, «Именование»: выборку называют по виду сущности — первому компоненту матчера. Компонент
+    # с данными, который система читает или требует, имя не меняет: AllOf(LevelProgress, LevelAttempt) — это
+    # _levelProgress, а не _levelAttempts. Уточнение-состояние перед видом (_animatingSlots) решается на ревью.
+    data = data_components(code)
+    for path, added in changed.items():
+        for name, start, end, components in group_matchers(blank_literals(code[path])):
+            if not components or not added.intersection(range(start, end + 1)):
+                continue
+            word = singular(name.lstrip("_")).lower()
+            kind = components[0]
+            if word.endswith((singular(camel_tail(kind)), kind.lower())):
+                continue
+            named_by = [component for component in components[1:] if component in data and word.endswith(singular(camel_tail(component)))]
+            if named_by:
+                yield path, start, (f"выборка {name} названа по компоненту данных {named_by[0]}, а сущность в ней — {kind}: называй выборку "
+                                    f"по виду сущности, данные, которые система читает, имя не меняют")
+
+
 CHECKS = (return_spacing, config_extension, component_name, expression_wrapping, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
-          expression_body_line)
+          ecs_group_iterators, expression_body_line)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher)
 
 
@@ -1415,6 +1495,52 @@ def self_test():
     assert not list(ecs_group_usage(group_usage, {2, 3})), "Pure group-existence checks are allowed"
     assert len(list(ecs_group_usage(group_usage, {4}))) == 1, "Group iterators still require domain names"
     print("ecs-group-usage self-test ok")
+
+    iterators = ["private readonly IGroup<MetaEntity> _levelAttempts;",
+                 "private readonly IGroup<MetaEntity> _hearts;",
+                 "private readonly IGroup<GameEntity> _slots;",
+                 "private readonly IGroup<GameEntity> _heroes;",
+                 "foreach (MetaEntity levelProgress in _levelAttempts) { }",
+                 "foreach (MetaEntity hearts in _hearts) { }",
+                 "foreach (GameEntity fromSlot in _slots)",
+                 "foreach (GameEntity toSlot in _slots) { }",
+                 "foreach (GameEntity hero in _heroes) { }"]
+    found = list(ecs_group_iterators(iterators, set(range(1, len(iterators) + 1))))
+    assert [line for line, _ in found] == [5] and "(levelAttempt)" in found[0][1], found
+    assert not list(ecs_group_iterators(iterators, {1, 6, 7, 8, 9})), "Matching names, a nested pair and untouched lines pass"
+    print("ecs-group-iterators self-test ok")
+
+    components = {"Assets/Code/Meta/LevelProgressComponents.cs": ("[Meta] public class LevelProgress : IComponent { }\n"
+                                                                    "[Meta] public class LevelAttempt : ISavedComponent { public LevelAttemptData Value; }\n"
+                                                                    "[Game] public class Slot : IComponent { }\n"
+                                                                    "[Game] public class Animating : IComponent { }")}
+    system = "Assets/Code/Gameplay/CountSystem.cs"
+    def kind(group):
+        code = components | {system: group}
+        return [message for _, _, message in group_kind_problems(code, {system: {1, 2, 3}})]
+    attempt = "_levelAttempts = meta.GetGroup(MetaMatcher.AllOf(MetaMatcher.LevelProgress, MetaMatcher.LevelAttempt));"
+    assert "по компоненту данных LevelAttempt" in kind(attempt)[0]
+    assert not kind(attempt.replace("_levelAttempts", "_levelProgress")), "A group named after its kind passes"
+    assert not kind("_animatingSlots = game.GetGroup(GameMatcher.AllOf(GameMatcher.Slot, GameMatcher.Animating));"), "A state qualifier is a review matter"
+    print("group-kind self-test ok")
+
+    def noneof(code, path):
+        return [message for _, _, message in noneof_problems(code, {path: set(range(1, 50))})]
+
+    start = "Assets/Code/Level/Systems/StartAttemptSystem.cs"
+    reached = {start: ("_movers = game.GetGroup(GameMatcher.AllOf(GameMatcher.Mover).NoneOf(GameMatcher.Reached));\n"
+                       "mover.isReached = true;"),
+               "Assets/Code/Armaments/Systems/CleanupReachedSystem.cs": "armament.isReached = false;"}
+    assert not noneof(reached, start), "A flag set by the excluding feature is a leaf, even if another feature clears it"
+    attempt = {start: ("_levelProgress = meta.GetGroup(MetaMatcher.AllOf(MetaMatcher.LevelProgress).NoneOf(MetaMatcher.LevelAttempt));\n"
+                       "levelProgress.AddLevelAttempt(attempt);"),
+               "Assets/Code/Meta/LevelProgressComponents.cs": "[Meta] public class LevelAttempt : ISavedComponent { public LevelAttemptData Value; }"}
+    assert "NoneOf(LevelAttempt)" in noneof(attempt, start)[0], "A data component is entity state, not a done-marker"
+    waiting = {start: "_levelProgress = meta.GetGroup(MetaMatcher.AllOf(MetaMatcher.LevelProgress).NoneOf(MetaMatcher.LevelStartRequired));",
+               "Assets/Code/Level/Systems/FinishLevelStartSystem.cs": "levelProgress.isLevelStartRequired = false;",
+               "Assets/Code/LevelVictory/Systems/WinSystem.cs": "levelProgress.isLevelStartRequired = true;"}
+    assert "NoneOf(LevelStartRequired)" in noneof(waiting, start)[0], "Clearing a marker does not make the feature its owner"
+    print("noneof-marker self-test ok")
 
     same_line = ["private LevelAttemptData Attempt => Data.Attempt;",
                  "    public Foo(IBar bar) => _bar = bar;",
