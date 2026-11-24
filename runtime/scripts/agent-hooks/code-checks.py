@@ -226,8 +226,8 @@ def block_end(source, start):
 def component_record(lines, added):
     # OPTIONAL_ENTITAS.md, «Канон именования»: значение компонента — один факт. Запись из нескольких полей в Value
     # раскладывают на компоненты: с ней система, меняющая одно поле, читает запись, правит копию и кладёт обратно целиком,
-    # а сборка записи прямо в Add/Replace прячет несколько фактов за одним. Запись элементом списка (List<BroomMove>)
-    # и данными входного запроса (ShopProductPurchasedRequest) — норма: такую запись создают целиком и дальше только читают.
+    # а сборка записи прямо в Add/Replace прячет несколько фактов за одним, и в запросе тоже. Запись элементом списка
+    # (List<BroomMove>, List<EffectSetup>) — норма: список записей не разложить по компонентам одной сущности.
     source = blank_literals("\n".join(lines))
 
     def line(position):
@@ -251,9 +251,9 @@ def component_record(lines, added):
             use = re.compile(rf"\.\s*(?:Add|Replace)([A-Z]\w*)\s*\(\s*{variable}\s*\)").search(source, start, block_end(source, start))
         else:
             use = RECORD_ARGUMENT.match(source, start)
-        if use and not use.group(1).endswith("Request") and added.intersection({line(start), line(use.start())}):
+        if use and added.intersection({line(start), line(use.start())}):
             yield line(use.start()), (f"{use.group(1)} получает запись из нескольких полей: каждый факт сделай своим компонентом, "
-                                      "запись допустима только элементом списка или данными запроса")
+                                      "запись допустима только элементом списка")
 
 
 def top_level_expression(expression):
@@ -1567,6 +1567,7 @@ def self_test():
                "LevelAttemptData nextAttempt = new() { Number = 2, StartTimeUtc = now };",
                "levelProgress.ReplaceLevelAttempt(nextAttempt);",
                "levelProgress.AddLevelAttempt(new LevelAttemptData { Number = 1, StartTimeUtc = now });",
+               "request.AddShopProductPurchasedRequest(new ShopPurchaseData { ProductId = productId, OrderId = orderId });",
                "Vector3 position = coin.WorldPosition;",
                "position.y = 0;",
                "coin.ReplaceWorldPosition(position);",
@@ -1574,12 +1575,11 @@ def self_test():
                "coins.Add(3);",
                "slot.ReplaceSlotCoins(coins);",
                "request.AddUseBroomRequest(new List<BroomMove> { new BroomMove { CoinId = 1, ToSlotId = 2 } });",
-               "request.AddShopProductPurchasedRequest(new ShopPurchaseData { ProductId = productId, OrderId = orderId });",
                "levelProgress.ReplaceLevelAttemptDeals(levelProgress.LevelAttemptDeals + 1);"]
     found = list(component_record(records, set(range(1, len(records) + 1))))
-    assert [line for line, _ in found] == [3, 5, 6], found
+    assert [line for line, _ in found] == [3, 5, 6, 7], found
     assert [line for line, _ in component_record(records, {2})] == [3], "A changed field line flags its Replace"
-    assert not list(component_record(records, set(range(7, len(records) + 1)))), "Vector fields, list changes, list records, request data and one-fact components pass"
+    assert not list(component_record(records, set(range(8, len(records) + 1)))), "Vector fields, list changes, list records and one-fact components pass"
     print("component-record self-test ok")
 
     components = {"Assets/Code/Meta/LevelProgressComponents.cs": ("[Meta] public class LevelProgress : IComponent { }\n"
