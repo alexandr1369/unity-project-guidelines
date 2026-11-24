@@ -1167,6 +1167,22 @@ def ecs_group_usage(lines, added):
                 yield start, message
 
 
+def analytics_text_constant(lines, added, path):
+    # ARCHITECTURE_GUIDELINES.md, «Границы зависимостей»: имя события, ключ и значение параметра аналитики
+    # пишутся текстом в вызове; константа с именем, которое повторяет текст, только уводит от вызова.
+    analytics_call = re.compile(r"Analytics|DTDUserCard|AdjustEvent")
+    production = "/Tests/" not in path and "/Generated/" not in path
+    for index, line in enumerate(lines):
+        match = re.match(r"\s*(?:(?:public|private|protected|internal|static)\s+)*const\s+string\s+(\w+)\s*=", line)
+        if not match or index + 1 not in added:
+            continue
+        name = match.group(1)
+        usages = [other for number, other in enumerate(lines) if number != index and re.search(rf"\b{name}\b", other)]
+        sender = production and "Analytics" in path and not name.endswith("FORMAT")
+        if "ANALYTICS" in name or sender or production and any(analytics_call.search(usage) for usage in usages):
+            yield index + 1, "текст аналитики в const: имя события, ключ и значение параметра пиши текстом в вызове"
+
+
 def singular(word):
     if word.endswith("ies"):
         return word[:-3] + "y"
@@ -1266,7 +1282,7 @@ CHECKS = (return_spacing, config_extension, component_name, expression_wrapping,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer, component_record,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
           ecs_group_iterators, expression_body_line)
-PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher)
+PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher, analytics_text_constant)
 
 
 VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
@@ -1570,6 +1586,31 @@ def self_test():
     assert not list(ecs_group_usage(group_usage, {2, 3})), "Pure group-existence checks are allowed"
     assert len(list(ecs_group_usage(group_usage, {4}))) == 1, "Group iterators still require domain names"
     print("ecs-group-usage self-test ok")
+
+    booster_use = ["class ActivateBoosterSystem", "{",
+                   '    private const string BROOM_ANALYTICS_NAME = "broom";',
+                   "    void Use() => _gameAnalyticsSender.SendBoosterUse(BROOM_ANALYTICS_NAME);", "}"]
+    assert len(list(analytics_text_constant(booster_use, {3}, "Assets/Code/ActivateBoosterSystem.cs"))) == 1
+    assert not list(analytics_text_constant(booster_use, {4}, "Assets/Code/ActivateBoosterSystem.cs")), "Old constants stay outside the change"
+    user_card = ["class DevToDevService", "{",
+                 '    private const string AD_TRACKER_ID_PROPERTY_NAME = "ad_tracker_id";',
+                 "    void Match(string adid) => DTDUserCard.Set(AD_TRACKER_ID_PROPERTY_NAME, adid);", "}"]
+    assert len(list(analytics_text_constant(user_card, {3}, "Assets/Code/DevToDevService.cs"))) == 1
+    currency = ["class DevToDevAnalyticsSender", "{", '    private const string IAP_GEMS_SOURCE = "iap";',
+                "    bool Bought(string source) => source == IAP_GEMS_SOURCE;", "}"]
+    assert len(list(analytics_text_constant(currency, {3}, "Assets/Code/Meta/DevToDev/AnalyticsSender/DevToDevAnalyticsSender.cs"))) == 1
+    date = ["class AppMetricaAnalyticsSender", "{", '    private const string DATE_FORMAT = "yyyy-MM-dd";',
+            "    string Day(DateTime time) => time.ToString(DATE_FORMAT);", "}"]
+    assert not list(analytics_text_constant(date, {3}, "Assets/Code/Meta/AppMetrica/AnalyticsSender/AppMetricaAnalyticsSender.cs")), "Format strings are technical"
+    fixture = ["class ShopFeatureTests", "{",
+               '    private const string SMALL_BUNDLE_ID = "small_bundle";',
+               "    void Buy() => store.Buy(SMALL_BUNDLE_ID);",
+               "    void Check() => gameAnalyticsSender.Received().SendIAPPurchase(SMALL_BUNDLE_ID);", "}"]
+    assert not list(analytics_text_constant(fixture, {3}, "Assets/Code/Tests/EditMode/ShopFeatureTests.cs")), "Test fixtures may name shared data"
+    save_key = ["class SaveLoadService", "{", '    private const string PROGRESS_KEY = "CoinMergeProgress";',
+                "    void Save(string json) => PlayerPrefs.SetString(PROGRESS_KEY, json);", "}"]
+    assert not list(analytics_text_constant(save_key, {3}, "Assets/Code/SaveLoadService.cs")), "Non-analytics constants stay"
+    print("analytics-text-constant self-test ok")
 
     iterators = ["private readonly IGroup<MetaEntity> _levelAttempts;",
                  "private readonly IGroup<MetaEntity> _hearts;",
