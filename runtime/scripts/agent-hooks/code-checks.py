@@ -213,6 +213,28 @@ def component_value_initializer(lines, added):
             yield number, "у поля Value компонента инициализатор: убери, значение приходит через Add/Replace"
 
 
+CONTEXTS = ("Game", "Meta", "Input")
+COMPONENT_CONTEXTS = re.compile(r"^\s*(?P<attributes>(?:\[[^\]]*\]\s*)+)(?:public\s+)?(?:sealed\s+)?class\s+(?P<name>\w+)\s*:\s*[^{]*\bI\w*Component\b")
+
+
+def component_context(lines, added):
+    # OPTIONAL_ENTITAS.md, «Сущности и компоненты»: компонент объявляется в одном контексте — там, где живёт его сущность.
+    # Запрос из другого контекста несёт свои компоненты (DebugGems в Game), сохраняемый Gems остаётся в Meta.
+    # Исключение — технические Id и Destructed, которые есть у сущностей каждого контекста.
+    for number in sorted(added):
+        if number > len(lines):
+            continue
+
+        match = COMPONENT_CONTEXTS.match(blank_literals(lines[number - 1]))
+        if not match or match.group("name") in ("Id", "Destructed"):
+            continue
+
+        contexts = [word for word in re.findall(r"\w+", match.group("attributes")) if word in CONTEXTS]
+        if len(contexts) > 1:
+            yield number, (f"компонент {match.group('name')} объявлен в контекстах {', '.join(contexts)}: компонент живёт в одном "
+                           f"контексте, запросу из другого контекста заводят свои компоненты (DebugGems, а не [Game, Meta] Gems)")
+
+
 RECORD_COPY = re.compile(r"(?:\b[\w.<>\[\],?]+|\bvar)\s+(\w+)\s*=\s*(\w+)\s*\.\s*([A-Z]\w*)\s*;")
 RECORD_LOCAL = re.compile(r"\b(\w+)\s*=\s*new\b[\w\s.<>,()]*?\{([^{}]*)\}\s*;")
 RECORD_ARGUMENT = re.compile(r"\.\s*(?:Add|Replace)([A-Z]\w*)\s*\(\s*new\b[\w\s.<>,()]*?\{([^{}]*)\}\s*\)")
@@ -582,6 +604,33 @@ def refresh_method_name(lines, added, path=""):
     for number in sorted(added):
         if number <= len(lines) and re.search(r"\b(void|bool|int|float|string|Task)\s+Refresh\w*\(", lines[number - 1]):
             yield number, "метод с Refresh вне системы: называй его Update… по обновляемой части"
+
+
+PURCHASE_SYNONYMS = {"buy": "Purchase", "bought": "Purchased"}
+DECLARED_NAME = re.compile(
+    r"(?<![\w.])(?!(?:return|new|await|throw|case|goto|else|in|is|as|out|ref|params|this|using|yield|when|where|from|select|let|"
+    r"public|private|protected|internal|static|readonly|const|override|virtual|abstract|sealed|partial|async|event|extern|volatile)\b)"
+    r"[A-Za-z_][\w.]*(?:<[^<>;]*>)?(?:\[\])*\??\s+(?P<name>@?_?[A-Za-z]\w*)\s*(?==>|[=;,){:(<]|\bin\b)")
+
+
+def purchase_word(lines, added, path=""):
+    # CODE_STYLE.md, «Поля и свойства»: одно понятие — одно слово. Покупка называется Purchase и за деньги, и за гемы,
+    # поэтому Buy и Bought в новых объявлениях не используются: поиск по одному слову находит все покупки.
+    if "Assets/Code/" not in path or "/Plugins/" in path:
+        return
+
+    source = blank_literals("\n".join(lines)).split("\n")
+    for number in sorted(added):
+        if number > len(source):
+            continue
+
+        line = source[number - 1]
+        names = [match.group("name") for match in DECLARED_NAME.finditer(line)] + [name for _, name in TYPE_DECLARATION.findall(line)]
+        for name in dict.fromkeys(names):
+            words = {word.lower() for word in NAME_WORDS.findall(name.lstrip("_@"))}
+            for word, canonical in PURCHASE_SYNONYMS.items():
+                if word in words:
+                    yield number, f"имя {name}: покупка называется {canonical}, слово {word.capitalize()} не используем — одно понятие, одно слово"
 
 
 def unity_time(lines, added, path=""):
@@ -1528,8 +1577,9 @@ def needless_wrap(lines, added):
 CHECKS = (jump_spacing, config_extension, component_name, expression_wrapping, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer, component_record,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
-          ecs_group_iterators, expression_body_line, needless_wrap)
-PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher, analytics_text_constant, one_line_wrapper)
+          ecs_group_iterators, expression_body_line, needless_wrap, component_context)
+PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher, analytics_text_constant, one_line_wrapper,
+               purchase_word)
 
 
 VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
@@ -1705,9 +1755,9 @@ def self_test():
     from pathlib import Path
     from unittest.mock import patch
 
-    shop_branch = ["if (!TryBuyTray(storage))", "{", "    SendStoreOpen();", "    OpenShop();", "    continue;", "}"]
+    shop_branch = ["if (!TryPurchaseTray(storage))", "{", "    SendStoreOpen();", "    OpenShop();", "    continue;", "}"]
     assert list(jump_spacing(shop_branch, {5})), "continue after two lines needs a blank line"
-    assert not list(jump_spacing(["if (!TryBuyTray(storage))", "{", "    OpenShop();", "    continue;", "}"], {4})), "Two-line branch keeps continue close"
+    assert not list(jump_spacing(["if (!TryPurchaseTray(storage))", "{", "    OpenShop();", "    continue;", "}"], {4})), "Two-line branch keeps continue close"
     assert not list(jump_spacing(["    if (skip)", "        continue;"], {2})), "Braceless guard is not a block"
     multiline_guard = ["{", "    Read();", "    if (first ||", "        second)", "        continue;", "}"]
     assert not list(jump_spacing(multiline_guard, {5})), "Braceless guard with a wrapped condition is not a block"
@@ -2573,6 +2623,34 @@ def self_test():
         stage("Assets/Code/Tests/PlayMode/FakeSystem.cs", system(40))
         assert not execute_length(cwd), "Tests stay out"
     print("execute-length self-test ok")
+
+    component_lines = ["[Game, Meta] public class Gems : ISavedComponent { public int Value; }",
+                       "[Game] public class DebugGems : IComponent { public int Value; }",
+                       "[Game, Meta] public class Id : IComponent { [PrimaryEntityIndex] public int Value; }",
+                       "[Game, Input, Meta] public class Destructed : IComponent { }",
+                       "[Game, Event(EventTarget.Self)] public class Animating : IComponent { }",
+                       "[Meta, ComponentName(\"Game\")] public class Hearts : ISavedComponent { public int Value; }",
+                       "[Game][Meta] public class Hearts : IComponent { }"]
+    flagged = [number for number, _ in component_context(component_lines, set(range(1, len(component_lines) + 1)))]
+    assert flagged == [1, 7], flagged
+    print("component-context self-test ok")
+
+    purchase_lines = ["public class BuyHeartsSystem : IExecuteSystem",
+                      "private bool TryBuyExtraTrayIfNeeded(MetaEntity storage)",
+                      "if (!storage.TryPurchaseBoosterIfNeeded(boosterType, out bool bought))",
+                      "foreach (GameEntity buyAction in _buyActions)",
+                      "public int BoughtCount => _boughtCount;",
+                      "DTDAccrualType accrualType = source == \"iap\" ? DTDAccrualType.Bought : DTDAccrualType.Earned;",
+                      "_dialogueService.Open<BuyTrayDialogue>(DialogueOpenMode.PushHidePrevious);",
+                      "string eventName = \"buy_tray\"; // buy",
+                      "if (!TryPurchaseTray(storage, trayUnlock))",
+                      "return bought;",
+                      "private readonly IGroup<GameEntity> _buyActions;"]
+    every_line = set(range(1, len(purchase_lines) + 1))
+    flagged = [number for number, _ in purchase_word(purchase_lines, every_line, "src/game/Assets/Code/Meta/Shop/PurchaseSystem.cs")]
+    assert flagged == [1, 2, 3, 4, 5, 11], flagged
+    assert not list(purchase_word(purchase_lines, every_line, "src/game/Assets/Plugins/Store/Store.cs")), "SDK code stays out"
+    print("purchase-word self-test ok")
 
 
 if __name__ == "__main__":

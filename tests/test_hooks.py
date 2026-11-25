@@ -102,6 +102,8 @@ class HookTests(unittest.TestCase):
         self.assertIn("unread-internal self-test ok", result.stdout)
         self.assertIn("enum-owner-folder self-test ok", result.stdout)
         self.assertIn("type-head-word self-test ok", result.stdout)
+        self.assertIn("component-context self-test ok", result.stdout)
+        self.assertIn("purchase-word self-test ok", result.stdout)
         self.assertIn("vendor-package-files self-test ok", result.stdout)
         self.assertIn("destructed-filter self-test ok", result.stdout)
 
