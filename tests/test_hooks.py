@@ -101,6 +101,7 @@ class HookTests(unittest.TestCase):
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
         self.assertIn("unread-internal self-test ok", result.stdout)
         self.assertIn("enum-owner-folder self-test ok", result.stdout)
+        self.assertIn("type-head-word self-test ok", result.stdout)
         self.assertIn("vendor-package-files self-test ok", result.stdout)
         self.assertIn("destructed-filter self-test ok", result.stdout)
 

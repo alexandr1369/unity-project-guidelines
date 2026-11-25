@@ -132,14 +132,19 @@ def executable_lines(lines, start, end):
     return sum(1 for line in lines[start:end] if line.strip() and not line.strip().startswith("//") and line.strip() not in ("{", "}"))
 
 
-def return_spacing(lines, added):
-    # CODE_STYLE.md: перед return и continue пустая строка, если в блоке больше двух строк на экране; при двух — вплотную.
-    # Строки считаются по экрану: return с инициализатором объекта или цепочкой на несколько строк — уже не «две строки».
+JUMP_STATEMENT = re.compile(r"(return|continue|break|throw|goto|yield break)\b")
+SWITCH_LABEL = re.compile(r"(?:case\b.*|default)\s*:")
+
+
+def jump_spacing(lines, added):
+    # CODE_STYLE.md: перед оператором перехода пустая строка, если в блоке больше двух строк на экране; при двух — вплотную.
+    # Строки считаются по экрану: инициализатор объекта или цепочка на несколько строк — уже не «две строки».
+    # Блок — тело в фигурных скобках или секция case в switch; тело if без скобок блоком не считается.
     for index, line in enumerate(lines):
         text = line.strip()
-        if not (text in ("return;", "continue;") or text.startswith("return ") or text.startswith("yield break")):
+        jump = JUMP_STATEMENT.match(text)
+        if not jump:
             continue
-        word = "continue" if text == "continue;" else "return"
         indent = len(line) - len(line.lstrip())
         previous = index - 1
         while previous >= 0 and not lines[previous].strip():
@@ -148,11 +153,11 @@ def return_spacing(lines, added):
             continue
         if not lines[previous].rstrip().endswith((";", "{", "}")):
             continue
-        start = index
-        while start >= 0 and not (lines[start].strip() == "{" and len(lines[start]) - len(lines[start].lstrip()) < indent):
+        start = index - 1
+        while start >= 0 and not (len(lines[start]) - len(lines[start].lstrip()) < indent and (lines[start].strip() == "{" or SWITCH_LABEL.fullmatch(lines[start].strip()))):
             start -= 1
-        end = index
-        while end < len(lines) and not (lines[end].strip() == "}" and len(lines[end]) - len(lines[end].lstrip()) < indent):
+        end = index + 1
+        while end < len(lines) and not (len(lines[end]) - len(lines[end].lstrip()) < indent and (lines[end].strip() == "}" or SWITCH_LABEL.fullmatch(lines[end].strip()))):
             end += 1
         if start < 0 or not added.intersection(range(start + 1, end + 2)):
             continue
@@ -170,9 +175,9 @@ def return_spacing(lines, added):
         count = before + executable_lines(lines, index, statement_end + 1)
         blank = not lines[index - 1].strip()
         if count <= 2 and blank:
-            yield index + 1, f"перед {word} лишняя пустая строка: в блоке две строки"
+            yield index + 1, f"перед {jump.group(1)} лишняя пустая строка: в блоке две строки"
         elif count > 2 and not blank:
-            yield index + 1, f"перед {word} нужна пустая строка: в блоке больше двух строк"
+            yield index + 1, f"перед {jump.group(1)} нужна пустая строка: в блоке больше двух строк"
 
 
 def config_extension(lines, added):
@@ -1138,6 +1143,50 @@ def enum_owner_folder(cwd):
     return found
 
 
+TYPE_DECLARATION = re.compile(r"\b(class|struct|enum|interface|record)\s+([A-Z]\w*)")
+NAME_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+")
+TYPED_NAME = re.compile(r"(?<![\w.<\[])(?P<type>[A-Z]\w*)\??\s+(?P<name>@?_?[A-Za-z]\w*)\s*(?==>|[=;,){:]|\bin\b)")
+
+
+def type_head(name, kind):
+    words = NAME_WORDS.findall(name[1:] if kind == "interface" and re.match(r"I[A-Z]", name) else name)
+    return words[-2] if len(words) > 1 and words[-1] == "Base" else words[-1]
+
+
+def type_head_word(cwd):
+    # CODE_STYLE.md, «Поля и свойства»: имя хранит главное слово своего типа — последнее слово его имени, сокращают только
+    # уточнения перед ним: ShopPurchaseData purchaseData, IStaticDataService staticDataService. Сущности и контексты ECS
+    # называются по виду, поле компонента — Value, у абстрактной базы главное слово стоит перед Base.
+    staged = [path for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AMR"], cwd).splitlines()
+              if path.endswith(".cs") and "Assets/Code/" in path and "/Generated/" not in path and "/Plugins/" not in path]
+    if not staged:
+        return []
+
+    types = {}
+    for line in run(["git", "grep", "--cached", "-h", "-E", r"(class|struct|enum|interface|record) [A-Z]", "--",
+                     "*Assets/Code/*.cs", ":!*/Generated/*", ":!*/Plugins/*"], cwd).splitlines():
+        for kind, name in TYPE_DECLARATION.findall(blank_literals(line)):
+            if not name.endswith(("Entity", "Context")):
+                types.setdefault(name, kind)
+    found = []
+    for path in staged:
+        added = added_lines(cwd, path)
+        for number, line in enumerate(blank_literals(run(["git", "show", f":{path}"], cwd)).split("\n"), 1):
+            if number not in added:
+                continue
+
+            for match in TYPED_NAME.finditer(line):
+                type_name, name = match.group("type", "name")
+                if type_name not in types or name == "Value":
+                    continue
+
+                head = type_head(type_name, types[type_name])
+                if head.lower() not in (word.lower() for word in NAME_WORDS.findall(name.lstrip("_@"))):
+                    found.append(f"{path}:{number}: имя {name} теряет главное слово типа {type_name} — {head}: сокращай "
+                                 f"уточнения перед ним, а {head} оставь, иначе не видно, что это за объект (ShopPurchaseData purchaseData)")
+    return found
+
+
 def vendor_package_files(cwd):
     # INTEGRATION_GUIDELINES.md, «Установка SDK»: пакет Google (Firebase, EDM, Google Mobile Ads) кладёт список своих файлов
     # `*_version-*_manifest.txt`. Коммит, который трогает такой пакет, оставляет в индексе каждый файл списка, кроме
@@ -1476,7 +1525,7 @@ def needless_wrap(lines, added):
                                            f"строкой {length} символов, допуск {WRAP_WIDTH}")
 
 
-CHECKS = (return_spacing, config_extension, component_name, expression_wrapping, request_before_save,
+CHECKS = (jump_spacing, config_extension, component_name, expression_wrapping, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer, component_record,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
           ecs_group_iterators, expression_body_line, needless_wrap)
@@ -1648,7 +1697,7 @@ def violations(cwd):
 
     restored = restored_pr_base_paths(cwd, found)
     code_problems = [message for path, messages in found.items() if path not in restored for message in messages]
-    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + unread_internal(cwd) + enum_owner_folder(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd) + execute_length(cwd)
+    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + unread_internal(cwd) + enum_owner_folder(cwd) + type_head_word(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd) + execute_length(cwd)
 
 
 def self_test():
@@ -1657,11 +1706,16 @@ def self_test():
     from unittest.mock import patch
 
     shop_branch = ["if (!TryBuyTray(storage))", "{", "    SendStoreOpen();", "    OpenShop();", "    continue;", "}"]
-    assert list(return_spacing(shop_branch, {5})), "continue after two lines needs a blank line"
-    assert not list(return_spacing(["if (!TryBuyTray(storage))", "{", "    OpenShop();", "    continue;", "}"], {4})), "Two-line branch keeps continue close"
-    assert not list(return_spacing(["    if (skip)", "        continue;"], {2})), "Braceless guard is not a block"
+    assert list(jump_spacing(shop_branch, {5})), "continue after two lines needs a blank line"
+    assert not list(jump_spacing(["if (!TryBuyTray(storage))", "{", "    OpenShop();", "    continue;", "}"], {4})), "Two-line branch keeps continue close"
+    assert not list(jump_spacing(["    if (skip)", "        continue;"], {2})), "Braceless guard is not a block"
     multiline_guard = ["{", "    Read();", "    if (first ||", "        second)", "        continue;", "}"]
-    assert not list(return_spacing(multiline_guard, {5})), "Braceless guard with a wrapped condition is not a block"
+    assert not list(jump_spacing(multiline_guard, {5})), "Braceless guard with a wrapped condition is not a block"
+    switch_sections = ["switch (kind)", "{", "    case First:", "        Apply();", "        break;", "    case Second:",
+                       "        Apply();", "        Notify();", "        break;", "    default:", "        throw new InvalidOperationException();", "}"]
+    assert [number for number, _ in jump_spacing(switch_sections, set(range(1, 13)))] == [9], "Each case section is its own block"
+    failed_load = ["{", "    Debug.LogError(message);", "    Reset();", "    throw new InvalidOperationException(message);", "}"]
+    assert list(jump_spacing(failed_load, {4})), "throw after two lines needs a blank line"
     wrapped = [
         ["if", "    (ready) return;"],
         ["service.Do", "    (first, second);"],
@@ -2249,6 +2303,40 @@ def self_test():
         problems = enum_owner_folder(cwd)
         assert len(problems) == 1 and shop + "UI/:" in problems[0], ("Without holders the enum goes to its users", problems)
     print("enum-owner-folder self-test ok")
+
+    with tempfile.TemporaryDirectory() as cwd:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+        def stage(path, source):
+            file = Path(cwd, path)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(source)
+            git("add", "--", path)
+
+        shop = "src/game/Assets/Code/Meta/Shop/"
+        git("init", "-q")
+        stage(shop + "ShopPurchaseData.cs", "public class ShopPurchaseData { }\npublic enum BoosterType { Broom = 0 }\n")
+        stage(shop + "IStaticDataService.cs", "public interface IStaticDataService { }\npublic abstract class DialogueBase { }\n")
+        stage(shop + "ShopComponents.cs", "public class ShopProductPurchasedRequest : IComponent { public ShopPurchaseData Value; }\n")
+        stage("src/game/Assets/Code/Generated/Meta/MetaEntity.cs", "public partial class MetaEntity { }\n")
+        stage(shop + "Systems/CollectShopProductSystem.cs", "\n".join([
+            "public class CollectShopProductSystem",
+            "{",
+            "    public CollectShopProductSystem(IStaticDataService staticData, IStaticDataService staticDataService) { }",
+            "    private void Collect(MetaEntity storage, DialogueBase dialogue, BoosterType booster)",
+            "    {",
+            "        ShopPurchaseData purchase = storage.ShopProductPurchasedRequest;",
+            "        ShopPurchaseData purchaseData = storage.ShopProductPurchasedRequest;",
+            "        string text = \"ShopPurchaseData product = \";",
+            "        foreach ((BoosterType boosterType, int count) in Boosters) { }",
+            "    }",
+            "}",
+            ""]))
+        problems = type_head_word(cwd)
+        flagged = sorted(problem.split(": имя ")[1].split()[0] for problem in problems)
+        assert flagged == ["booster", "purchase", "staticData"], problems
+    print("type-head-word self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):
