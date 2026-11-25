@@ -133,17 +133,20 @@ def executable_lines(lines, start, end):
 
 
 def return_spacing(lines, added):
-    # CODE_STYLE.md: перед return пустая строка, если в блоке больше двух строк на экране; при двух — вплотную.
+    # CODE_STYLE.md: перед return и continue пустая строка, если в блоке больше двух строк на экране; при двух — вплотную.
     # Строки считаются по экрану: return с инициализатором объекта или цепочкой на несколько строк — уже не «две строки».
     for index, line in enumerate(lines):
         text = line.strip()
-        if not (text == "return;" or text.startswith("return ") or text.startswith("yield break")):
+        if not (text in ("return;", "continue;") or text.startswith("return ") or text.startswith("yield break")):
             continue
+        word = "continue" if text == "continue;" else "return"
         indent = len(line) - len(line.lstrip())
         previous = index - 1
         while previous >= 0 and not lines[previous].strip():
             previous -= 1
         if previous < 0 or (len(lines[previous]) - len(lines[previous].lstrip()) < indent and lines[previous].strip() != "{"):
+            continue
+        if not lines[previous].rstrip().endswith((";", "{", "}")):
             continue
         start = index
         while start >= 0 and not (lines[start].strip() == "{" and len(lines[start]) - len(lines[start].lstrip()) < indent):
@@ -167,9 +170,9 @@ def return_spacing(lines, added):
         count = before + executable_lines(lines, index, statement_end + 1)
         blank = not lines[index - 1].strip()
         if count <= 2 and blank:
-            yield index + 1, "перед return лишняя пустая строка: в блоке две строки"
+            yield index + 1, f"перед {word} лишняя пустая строка: в блоке две строки"
         elif count > 2 and not blank:
-            yield index + 1, "перед return нужна пустая строка: в блоке больше двух строк"
+            yield index + 1, f"перед {word} нужна пустая строка: в блоке больше двух строк"
 
 
 def config_extension(lines, added):
@@ -1653,6 +1656,12 @@ def self_test():
     from pathlib import Path
     from unittest.mock import patch
 
+    shop_branch = ["if (!TryBuyTray(storage))", "{", "    SendStoreOpen();", "    OpenShop();", "    continue;", "}"]
+    assert list(return_spacing(shop_branch, {5})), "continue after two lines needs a blank line"
+    assert not list(return_spacing(["if (!TryBuyTray(storage))", "{", "    OpenShop();", "    continue;", "}"], {4})), "Two-line branch keeps continue close"
+    assert not list(return_spacing(["    if (skip)", "        continue;"], {2})), "Braceless guard is not a block"
+    multiline_guard = ["{", "    Read();", "    if (first ||", "        second)", "        continue;", "}"]
+    assert not list(return_spacing(multiline_guard, {5})), "Braceless guard with a wrapped condition is not a block"
     wrapped = [
         ["if", "    (ready) return;"],
         ["service.Do", "    (first, second);"],
