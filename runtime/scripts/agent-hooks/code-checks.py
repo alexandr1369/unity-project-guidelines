@@ -136,10 +136,24 @@ JUMP_STATEMENT = re.compile(r"(return|continue|break|throw|goto|yield break)\b")
 SWITCH_LABEL = re.compile(r"(?:case\b.*|default)\s*:")
 
 
+def last_step_lines(lines, start, index):
+    # Строки последнего шага перед переходом: от пустой строки на уровне блока; пустая строка во вложенном блоке шаг не делит.
+    boundary = index - 1
+    depth = 0
+    while boundary > start:
+        text = lines[boundary].strip()
+        if not text and depth == 0:
+            break
+        depth += text.count("}") - text.count("{")
+        boundary -= 1
+    return executable_lines(lines, boundary + 1, index)
+
+
 def jump_spacing(lines, added):
     # CODE_STYLE.md: перед оператором перехода пустая строка, если в блоке больше двух строк на экране; при двух — вплотную.
     # Строки считаются по экрану: инициализатор объекта или цепочка на несколько строк — уже не «две строки».
     # Блок — тело в фигурных скобках или секция case в switch; тело if без скобок блоком не считается.
+    # Блок, уже поделённый пустой строкой, может кончаться шагом «одна строка и переход» вплотную.
     for index, line in enumerate(lines):
         text = line.strip()
         jump = JUMP_STATEMENT.match(text)
@@ -172,11 +186,12 @@ def jump_spacing(lines, added):
         before = executable_lines(lines, start + 1, index)
         if before == 0:
             continue
-        count = before + executable_lines(lines, index, statement_end + 1)
+        jump_lines = executable_lines(lines, index, statement_end + 1)
+        count = before + jump_lines
         blank = not lines[index - 1].strip()
         if count <= 2 and blank:
             yield index + 1, f"перед {jump.group(1)} лишняя пустая строка: в блоке две строки"
-        elif count > 2 and not blank:
+        elif count > 2 and not blank and last_step_lines(lines, start, index) + jump_lines > 2:
             yield index + 1, f"перед {jump.group(1)} нужна пустая строка: в блоке больше двух строк"
 
 
@@ -1766,6 +1781,13 @@ def self_test():
     assert [number for number, _ in jump_spacing(switch_sections, set(range(1, 13)))] == [9], "Each case section is its own block"
     failed_load = ["{", "    Debug.LogError(message);", "    Reset();", "    throw new InvalidOperationException(message);", "}"]
     assert list(jump_spacing(failed_load, {4})), "throw after two lines needs a blank line"
+    finished_step = ["foreach (GameEntity slot in slots)", "{", "    if (slot.Id != targetId)", "        continue;", "",
+                     "    slot.FinishSlotAnimation();", "    break;", "}"]
+    assert not list(jump_spacing(finished_step, {7})), "One line after a blank line keeps break close"
+    assert not list(jump_spacing(finished_step[:6] + [""] + finished_step[6:], {8})), "A blank line before that break is allowed too"
+    assert list(jump_spacing(finished_step[:6] + ["    Notify();"] + finished_step[6:], {8})), "Two lines after a blank line need a blank line"
+    nested_blank = ["{", "    if (ready)", "    {", "        Apply();", "", "        Notify();", "    }", "    break;", "}"]
+    assert list(jump_spacing(nested_blank, {8})), "A blank line inside a nested block does not split the outer block"
     wrapped = [
         ["if", "    (ready) return;"],
         ["service.Do", "    (first, second);"],
