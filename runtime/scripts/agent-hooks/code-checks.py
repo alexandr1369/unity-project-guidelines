@@ -1278,11 +1278,163 @@ def group_kind_problems(code, changed):
                                     f"по виду сущности, данные, которые система читает, имя не меняют")
 
 
+METHOD_HEAD = re.compile(r"^[ \t]*(?:\[[^\]\n]*\]\s*)*(?P<modifiers>(?:(?:public|private|protected|internal|static|override|virtual|"
+                         r"abstract|async|sealed|new|partial|unsafe|extern)\s+)+)(?P<type>[\w.<>,\[\]?() ]+?)\s+(?P<name>\w+)\s*"
+                         r"(?:<[^>\n]*>)?\s*\(", re.M)
+BRANCHING = re.compile(r"\b(?:if|else|for|foreach|while|do|switch|try|catch|return|yield|throw|lock|using|goto)\b|=>|\?(?!\.)")
+EXECUTE_LIMIT = 30
+GUIDE_WIDTH = 120
+WRAP_WIDTH = 140
+
+
+def method_spans(text):
+    # Методы с телом в тексте без литералов: имя, модификаторы, тип, строка объявления, строки скобок тела и само тело.
+    for match in METHOD_HEAD.finditer(text):
+        if match["type"].strip() in ("class", "struct", "interface", "record", "enum", "delegate", "event", "return", "new", "else"):
+            continue
+        parameters_end = closing(text, match.end() - 1)
+        head = re.match(r"[^{;=]*?(?=\{|;|=>)", text[parameters_end + 1:])
+        if not head:
+            continue
+        start = parameters_end + 1 + head.end()
+        if text.startswith(";", start):
+            continue
+        expression = text.startswith("=>", start)
+        end = text.find(";", start) if expression else block_end(text, start + 1)
+        yield {"name": match["name"], "modifiers": match["modifiers"].split(), "type": match["type"].strip(),
+               "declaration": text.count("\n", 0, match.start("name")) + 1, "opening": text.count("\n", 0, start) + 1,
+               "closing": text.count("\n", 0, end) + 1, "body": text[start + (2 if expression else 1):end], "expression": expression}
+
+
+def execute_lengths(source):
+    return [method["closing"] - method["opening"] - 1 for method in method_spans(blank_literals(source))
+            if method["name"] == "Execute" and not method["expression"]]
+
+
+def execute_length(cwd):
+    # OPTIONAL_ENTITAS.md, «Системы»: тело Execute — не больше 30 строк, считая пустые строки и внутренние скобки.
+    # Ловит Execute, который правка удлинила сверх предела или создала таким; прежняя длина, которую правка не растит, не мешает.
+    found, merging = [], merge_head(cwd)
+    for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], cwd).split():
+        if not path.endswith("System.cs") or any(part in f"/{path}" for part in CODE_EXCLUDES):
+            continue
+        before = [length for revision in ("HEAD", merging) if revision
+                  for length in execute_lengths(run(["git", "show", f"{revision}:{path}"], cwd))]
+        for method in method_spans(blank_literals(run(["git", "show", f":{path}"], cwd))):
+            length = method["closing"] - method["opening"] - 1
+            if method["name"] != "Execute" or method["expression"] or length <= EXECUTE_LIMIT or before and length <= max(before):
+                continue
+            grown = f"было {max(before)}" if before else "новый"
+            found.append(f"{path}:{method['declaration']}: Execute — {length} строк тела ({grown}), предел {EXECUTE_LIMIT}: сначала убери "
+                         "лишнее — проверку без сценария, переменную-синоним, перенос, — затем вынеси шаг с собственным решением; "
+                         "обёртку ради длины не вводи")
+    return found
+
+
+def one_line_wrapper(lines, added, path):
+    # CODE_STYLE.md, «Методы»: однострочный метод, который вызывается в одном месте, не заводят — вызов пишется на месте.
+    # Многострочная цепочка создания сущности остаётся шагом, привязки инсталлеров — их форма.
+    if any(part in f"/{path}" for part in CODE_EXCLUDES) or path.endswith("Installer.cs"):
+        return
+    text = blank_literals("\n".join(lines))
+    spans = list(method_spans(text))
+    names = Counter(method["name"] for method in spans)
+    for method in spans:
+        body = method["body"].strip()
+        if ("private" not in method["modifiers"] or method["type"] != "void" or names[method["name"]] > 1 or "\n" in body
+                or body.count(";") > 1 or BRANCHING.search(body)):
+            continue
+        uses = [use.start() for use in re.finditer(rf"\b{method['name']}\b", text) if text.count("\n", 0, use.start()) + 1 != method["declaration"]]
+        if len(uses) != 1 or not re.match(rf"{method['name']}\s*\(", text[uses[0]:]):
+            continue
+        call = text.count("\n", 0, uses[0]) + 1
+        if call in added or added.intersection(range(method["declaration"], method["closing"] + 1)):
+            yield method["declaration"], f"{method['name']} — однострочный метод с одним вызовом (строка {call}): пиши вызов на месте"
+
+
+CONDITION_HEAD = re.compile(r"^[ \t]*(?:\}\s*)?(?P<head>(?:else\s+)?(?:if|while))\s*\(", re.M)
+BOOL_RELAY = re.compile(r"^[ \t]*bool\s+(?P<name>\w+)\s*=\s*(?P<value>[^;{}]+);[ \t]*\n[ \t]*(?P<head>if)\s*\(\s*(?P<negation>!?)\s*(?P=name)\s*\)", re.M)
+STATEMENT_KEYWORD = re.compile(r"(?:if|else|for|foreach|while|do|switch|using|lock|fixed|try|catch|finally|case|default|checked|unchecked|get|set)\b")
+SIGNATURE_HEAD = re.compile(r"(?!(?:return|await|throw|new|yield)\b)(?:[\w.<>\[\],?]+\s+)+\w+\s*(?:<[^>]*>)?\s*\(")
+
+
+def needless_wrap(lines, added):
+    # CODE_STYLE.md, «Форматирование» и «Методы»: условие, вызов и присваивание, которые с отступом помещаются в направляющую
+    # 120 символов, пишутся одной строкой; до 140 одной строкой можно. bool-переменная, которая только переносит перенесённый
+    # вызов в следующий if, не заводится, если условие с вызовом помещается в 140.
+    text = re.sub(r'(?P<raw>"{3,})[\s\S]*?(?P=raw)|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/',
+                  lambda match: re.sub(r"[^\n]", "#" if match.group().startswith("/") or "\n" in match.group() else "x", match.group()), "\n".join(lines))
+
+    def line_of(position):
+        return text.count("\n", 0, position) + 1
+
+    def prefix(start):
+        return start - text.rfind("\n", 0, start) - 1
+
+    def joined(start, end):
+        return re.sub(r"(?<=[(\[]) | (?=[)\]])", "", re.sub(r"\s*\n\s*", " ", text[start:end].strip()))
+
+    def one_line(start, end):
+        return prefix(start) + len(joined(start, end))
+
+    for match in CONDITION_HEAD.finditer(text):
+        opening = match.end() - 1
+        end = closing(text, opening)
+        condition = text[opening:end + 1]
+        if line_of(opening) == line_of(end) or "=>" in condition or "{" in condition or "#" in condition:
+            continue
+        length = one_line(match.start("head"), end + 1)
+        if length <= GUIDE_WIDTH and added.intersection(range(line_of(opening), line_of(end) + 1)):
+            yield line_of(opening), f"условие помещается в строку: одной строкой {length} символов, направляющая {GUIDE_WIDTH}"
+    depth, start = 0, 0
+    for index, character in enumerate(text):
+        depth += {"(": 1, "[": 1, ")": -1, "]": -1}.get(character, 0)
+        if character in "{}" and not depth:
+            start = index + 1
+        if character != ";" or depth:
+            continue
+        statement_start, start = start, index + 1
+        while keyword := STATEMENT_KEYWORD.match(text[statement_start:index].lstrip()):
+            statement_start += len(text[statement_start:index]) - len(text[statement_start:index].lstrip())
+            header = text.find("(", statement_start, index)
+            if keyword[0] in ("if", "while", "for", "foreach", "using", "lock", "fixed") and header >= 0:
+                statement_start = closing(text, header) + 1
+            elif keyword[0] in ("case", "default"):
+                statement_start = text.find(":", statement_start) + 1
+            elif keyword[0] == "else":
+                statement_start += keyword.end()
+            else:
+                break
+        statement_start += len(text[statement_start:index]) - len(text[statement_start:index].lstrip())
+        statement = text[statement_start:index + 1]
+        parts = statement.split("\n")
+        if (len(parts) < 2 or "=>" in statement or re.search(r"[#{}]", statement) or STATEMENT_KEYWORD.match(statement)
+                or SIGNATURE_HEAD.match(statement) and "=" not in statement.split("(")[0]
+                or any(part.strip().startswith("[") for part in parts)
+                or any(part.strip().startswith((".", "?", ":", "+", "&&", "||")) for part in parts[1:])
+                or any(part.rstrip().endswith(("&&", "||", "+", "?", ":", "??")) for part in parts[:-1])
+                or not added.intersection(range(line_of(statement_start), line_of(index) + 1))):
+            continue
+        length = one_line(statement_start, index + 1)
+        if length <= GUIDE_WIDTH:
+            yield line_of(statement_start), f"перенос не нужен: одной строкой {length} символов, направляющая {GUIDE_WIDTH}"
+    for match in BOOL_RELAY.finditer(text):
+        value = match["value"]
+        top = top_level_expression(value) or "?"
+        if ("\n" not in value.strip() or "#" in value or len(re.findall(rf"\b{match['name']}\b", text)) != 2
+                or match["negation"] and re.search(r"&&|\|\||[=!<>]=|[<>?]|\bis\b|\bas\b", top)):
+            continue
+        length = prefix(match.start("head")) + len(f"if ({match['negation']}{joined(match.start('value'), match.end('value'))})")
+        if length <= WRAP_WIDTH and added.intersection(range(line_of(match.start()), line_of(match.end()) + 1)):
+            yield line_of(match.start()), (f"{match['name']} только переносит перенесённый вызов в if: пиши вызов в условии, одной "
+                                           f"строкой {length} символов, допуск {WRAP_WIDTH}")
+
+
 CHECKS = (return_spacing, config_extension, component_name, expression_wrapping, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer, component_record,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
-          ecs_group_iterators, expression_body_line)
-PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher, analytics_text_constant)
+          ecs_group_iterators, expression_body_line, needless_wrap)
+PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher, analytics_text_constant, one_line_wrapper)
 
 
 VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
@@ -1450,7 +1602,7 @@ def violations(cwd):
 
     restored = restored_pr_base_paths(cwd, found)
     code_problems = [message for path, messages in found.items() if path not in restored for message in messages]
-    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + unread_internal(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd)
+    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + unread_internal(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd) + execute_length(cwd)
 
 
 def self_test():
@@ -2119,6 +2271,117 @@ def self_test():
             assert not restored_pr_base_paths(cwd, [restored, edited])
             assert any(problem.startswith(restored + ":") for problem in violations(cwd))
     print("exact-pr-base-restoration self-test ok")
+
+    def touched(sample):
+        return set(range(1, len(sample) + 1))
+
+    fits = ["            if (slot.Id == target.Id ||",
+            "                slot.ParentBoardId != target.ParentBoardId ||",
+            "                !slot.isSlotUnlocked)",
+            "            {", "                continue;", "            }"]
+    assert len(list(needless_wrap(fits, touched(fits)))) == 1, "A wrapped condition that fits the 120 guide is joined"
+    assert not list(needless_wrap(fits, {5})), "Untouched conditions stay"
+    tolerated_condition = ["            if (sourceSlot.Id == target.Id ||",
+                           "                sourceSlot.ParentBoardId != target.ParentBoardId ||",
+                           "                !sourceSlot.isSlotUnlocked)", "            {", "                continue;", "            }"]
+    assert not list(needless_wrap(tolerated_condition, touched(tolerated_condition))), "A condition of 121–140 may stay wrapped"
+    long_condition = ["                if (fromSlot.ParentBoardId != boardId ||", "                    !fromSlot.isSlotUnlocked ||",
+                      "                    (fromSlot.isSlotFilled && fromSlot.isSlotSingleCoinNumber))", "                {",
+                      "                    continue;", "                }"]
+    assert not list(needless_wrap(long_condition, touched(long_condition))), "A condition over 140 is wrapped by connectives"
+    call = ["            _introLoadingService.SetProgress(IntroLoadingStage.SceneInitialization,", "                progress);"]
+    assert len(list(needless_wrap(call, touched(call)))) == 1, "A wrapped call that fits the 120 guide is joined"
+    tolerated = ["            _introLoadingService.SetProgress(IntroLoadingStage.SceneInitialization,",
+                 "                (float)completedSteps / INITIALIZATION_STEPS_COUNT);"]
+    assert not list(needless_wrap(tolerated, touched(tolerated))), "Between 120 and 140 one line is allowed, not required"
+    column = ["                _heartsUIService.Update(", "                    hearts.Hearts,", "                    _heartsConfig.MaxHearts,",
+              "                    TimeLeftToFullRestore(hearts));"]
+    assert len(list(needless_wrap(column, touched(column)))) == 1, "Arguments one per line that fit the guide are joined"
+    tail = ["                    bool hasExtraTray = storage.TryBuyBoosterIfNeeded(BoosterType.ExtraTray, extraTray.PriceGems,",
+            "                        extraTray.PurchaseCount, out bool bought);"]
+    assert not list(needless_wrap(tail, touched(tail))), "A compact tail over 140 stays"
+    text_argument = ["            EditorUtility.DisplayDialog(\"Invalid Folder\", \"Select a folder inside this Unity project's Assets directory.\",",
+                     "                \"OK\", \"Cancel\", \"Never ask again in this editor session\");"]
+    assert not list(needless_wrap(text_argument, touched(text_argument))), "Text literals count by their length"
+    structural = [
+        ["            return lowerCoin != null &&", "                   lowerCoin.CoinNumber == coin.CoinNumber;"],
+        ["            int hiddenCoins = isHidden", "                ? coinsToDeal - openTopCoins", "                : 0;"],
+        ["            CreateEntity.Empty()", "                .isSaveProgressRequest = true;"],
+        ["            _group = game.GetGroup(GameMatcher", "                .AllOf(GameMatcher.Slot));"],
+        ["            if (ready)", "                return;"],
+        ["            foreach (GameEntity slot in _slots)", "                slot.isSlotFilled = false;"],
+        ["        [Header(\"Sounds\")]", "        [SerializeField] private AudioClip _clip;"],
+        ["        bool TryGetPraiseBefore(int step,", "            out LocalizedString praise);"],
+        ["            dialogue.Closed += () =>", "                OnDialogueClosed(dialogue);"],
+        ["            if (slotSnapshot.Obstacles is { Count: 0 })", "                slotSnapshot.Obstacles = null;"],
+        ["            string message = \"first part\" +", "                \"second part\";"],
+        ["            string text = @\"first", "second\";"],
+    ]
+    for sample in structural:
+        assert not list(needless_wrap(sample, touched(sample))), sample
+    relay = ["                    bool hasReroll = storage.TryBuyBoosterIfNeeded(BoosterType.Reroll, reroll.PriceGems,",
+             "                        reroll.PurchaseCount, out bool bought);", "                    if (!hasReroll)", "                        return false;"]
+    assert any("hasReroll" in message for _, message in needless_wrap(relay, touched(relay))), "A bool relayed to the next if goes into the condition"
+    used_twice = relay + ["                    Log(hasReroll);"]
+    assert not any("hasReroll" in message for _, message in needless_wrap(used_twice, touched(used_twice))), "A bool read again is a name"
+    print("needless-wrap self-test ok")
+
+    wrapper = ["public class LobbyEnterState", "{", "    public void Enter()", "    {", "        InitializeAudio();", "    }", "",
+               "    private void InitializeAudio()", "    {", "        _audioService.PreloadLobbySounds();", "    }", "}"]
+    path = "Assets/Code/Infrastructure/States/LobbyEnterState.cs"
+    assert len(list(one_line_wrapper(wrapper, {8, 9, 10, 11}, path))) == 1, "A one-line method with one call is written in place"
+    assert len(list(one_line_wrapper(wrapper, {5}, path))) == 1, "A new call to a one-line method is caught"
+    assert not list(one_line_wrapper(wrapper, {3}, path)), "Untouched wrappers stay"
+    expression = wrapper[:7] + ["    private void InitializeAudio() =>", "        _audioService.PreloadLobbySounds();", "}"]
+    assert len(list(one_line_wrapper(expression, touched(expression), path))) == 1, "Expression bodies count as one line"
+    allowed = [
+        wrapper[:4] + ["        InitializeAudio();", "        InitializeAudio();"] + wrapper[5:],
+        wrapper[:4] + ["        _button.onClick.AddListener(InitializeAudio);"] + wrapper[5:],
+        wrapper[:9] + ["        CreateEntity.Empty()", "            .isSaveProgressRequest = true;"] + wrapper[10:],
+        wrapper[:7] + ["    private bool IsReady()", "    {", "        return _audioService.IsReady();", "    }", "}"],
+    ]
+    for sample in allowed:
+        assert not list(one_line_wrapper(sample, touched(sample), path)), sample
+    assert not list(one_line_wrapper(wrapper, touched(wrapper), "Assets/Code/Infrastructure/Installers/BootstrapInstaller.cs")), "Installer bindings"
+    assert not list(one_line_wrapper(wrapper, touched(wrapper), "Assets/Code/Tests/PlayMode/LobbyTests.cs")), "Tests"
+    print("one-line-wrapper self-test ok")
+
+    with tempfile.TemporaryDirectory() as cwd:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+        def stage(path, source):
+            file = Path(cwd, path)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(source)
+            git("add", "--", path)
+
+        def system(lines):
+            body = "\n".join(f"        Step{index}();" for index in range(lines))
+            return f"public class BuySlotSystem\n{{\n    public void Execute()\n    {{\n{body}\n    }}\n}}\n"
+
+        buy = "Assets/Code/Interact/Systems/BuySlotSystem.cs"
+        deal = "Assets/Code/Deal/Systems/DealCoinsSystem.cs"
+        git("init", "-q")
+        stage(buy, system(30))
+        stage(deal, system(43))
+        git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid", "commit", "-qm", "Fixture")
+        stage(buy, system(31))
+        assert len(execute_length(cwd)) == 1, "Execute grown over 30"
+        stage(buy, system(30))
+        stage(deal, system(43).replace("Step0", "Renamed"))
+        assert not execute_length(cwd), "An old long Execute the change does not grow stays"
+        stage(deal, system(42))
+        assert not execute_length(cwd), "Shortening a long Execute passes"
+        stage(deal, system(44))
+        assert len(execute_length(cwd)) == 1, "Growing a long Execute fails"
+        stage(deal, system(43))
+        stage("Assets/Code/Board/Systems/NewSystem.cs", system(31))
+        assert len(execute_length(cwd)) == 1, "A new Execute over 30"
+        stage("Assets/Code/Board/Systems/NewSystem.cs", system(30))
+        stage("Assets/Code/Tests/PlayMode/FakeSystem.cs", system(40))
+        assert not execute_length(cwd), "Tests stay out"
+    print("execute-length self-test ok")
 
 
 if __name__ == "__main__":

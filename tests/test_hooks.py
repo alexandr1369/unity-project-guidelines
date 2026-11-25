@@ -564,7 +564,7 @@ class HookTests(unittest.TestCase):
                   "    public void Execute()\n    {\n"
                   "        if (fromSlot.ParentBoardId != boardId ||\n            !fromSlot.isSlotUnlocked ||\n"
                   "            (fromSlot.isSlotFilled && fromSlot.isSlotSingleCoinNumber))\n        {\n            return;\n        }\n\n"
-                  "        Apply(first, second, third,\n            fourth);\n"
+                  "        ApplyBoardChange(currentBoard, incomingBoard, boardChangeAnimation, boardChangeProgress, boardChangeReward,\n            nextLevel);\n"
                   "        GiveUpLevelSystem system = new(Resolve<GameContext>(), Resolve<MetaContext>(),\n"
                   "            Resolve<IStaticDataService>(), stateMachine);\n"
                   "    }\n\n"
