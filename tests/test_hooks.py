@@ -100,6 +100,7 @@ class HookTests(unittest.TestCase):
         self.assertIn("mono-lifecycle-order self-test ok", result.stdout)
         self.assertIn("duplicate-save-stage self-test ok", result.stdout)
         self.assertIn("unread-internal self-test ok", result.stdout)
+        self.assertIn("config-enum self-test ok", result.stdout)
         self.assertIn("vendor-package-files self-test ok", result.stdout)
         self.assertIn("destructed-filter self-test ok", result.stdout)
 

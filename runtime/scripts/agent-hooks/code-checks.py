@@ -1092,6 +1092,50 @@ def unread_internal(cwd):
     return found
 
 
+CONFIG_FOLDER = re.compile(r"/Configs?/")
+ENUM_DECLARATION = re.compile(r"^[ \t]*(?:\[[^\]\n]*\]\s*)*(?:(?:public|internal)\s+)?enum\s+(\w+)", re.M)
+NAMESPACE_HEAD = re.compile(r"\bnamespace\s+[\w.]+\s*$")
+TYPED_MEMBER = re.compile(r"(?:^|[{;])[ \t]*(?:\[[^\]\n]*\]\s*)*(?:(?:public|private|protected|internal)\s+)+" + MEMBER_MODIFIERS
+                          + r"(?P<type>[\w.<>\[\],? ]+?)\s+\w+\s*(?:;|=|\{)")
+TYPED_PROPERTY = re.compile(r"^[ \t]*(?P<type>[\w.<>\[\],?]+)\s+\w+\s*\{\s*(?:get|set|init)\b")
+
+
+def config_enum(cwd):
+    # ARCHITECTURE_GUIDELINES.md, «Структура модулей»: перечисление, которое хранят только поля одного конфига и не
+    # упоминает код других модулей, лежит в Config рядом с ним. Чтение в UI, тестах и редакторе своего модуля этого
+    # не меняет. Проверяется новое объявление вне Config, в том числе перенесённое.
+    found = []
+    for path in run(["git", "diff", "--cached", "--name-only", "--diff-filter=AMR"], cwd).splitlines():
+        if not path.endswith(".cs") or "Assets/Code/" not in path or CONFIG_FOLDER.search(path) \
+                or any(part in path for part in (*CODE_EXCLUDES, "/Editor/")):
+            continue
+        text = blank_literals(run(["git", "show", f":{path}"], cwd))
+        blocks = brace_blocks(text)
+        added = added_lines(cwd, path)
+        for match in ENUM_DECLARATION.finditer(text):
+            number = text.count("\n", 0, match.start(1)) + 1
+            if number not in added or any(not NAMESPACE_HEAD.search(text, 0, start) for start, end in blocks
+                                          if start < match.start(1) < end):
+                continue
+
+            name = match.group(1)
+            word = re.compile(rf"\b{name}\b")
+            mentions = [line.split(":", 2) for line in run(["git", "grep", "--cached", "--full-name", "-n", "-w", "-e", name,
+                                                             "--", "*.cs"], cwd).splitlines()]
+            runtime = [(file, line) for file, _, line in mentions if "/Tests/" not in file and "/Editor/" not in file]
+            holders = {file for file, line in runtime
+                       if any(word.search(member["type"]) for member in [*TYPED_MEMBER.finditer(line), *TYPED_PROPERTY.finditer(line)])}
+            if not holders or not all(CONFIG_FOLDER.search(file) for file in holders):
+                continue
+
+            folders = {file[:CONFIG_FOLDER.search(file).end()] for file in holders}
+            module = os.path.dirname(next(iter(folders)).rstrip("/")) + "/"
+            if len(folders) == 1 and all(file == path or file.startswith(module) for file, _ in runtime):
+                found.append(f"{path}:{number}: перечисление {name} хранят только поля конфига в {next(iter(folders))}, "
+                             "другие модули его не упоминают: положи его туда, рядом с конфигом")
+    return found
+
+
 def vendor_package_files(cwd):
     # INTEGRATION_GUIDELINES.md, «Установка SDK»: пакет Google (Firebase, EDM, Google Mobile Ads) кладёт список своих файлов
     # `*_version-*_manifest.txt`. Коммит, который трогает такой пакет, оставляет в индексе каждый файл списка, кроме
@@ -1602,7 +1646,7 @@ def violations(cwd):
 
     restored = restored_pr_base_paths(cwd, found)
     code_problems = [message for path, messages in found.items() if path not in restored for message in messages]
-    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + unread_internal(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd) + execute_length(cwd)
+    return code_problems + new_type_words(cwd) + nested_feature(cwd) + untranslated_terms(cwd) + noneof_marker(cwd) + system_direct_save(cwd) + duplicate_save_stage(cwd) + unread_internal(cwd) + config_enum(cwd) + vendor_package_files(cwd) + foreign_app_config(cwd) + execute_length(cwd)
 
 
 def self_test():
@@ -2146,6 +2190,44 @@ def self_test():
         stage("Assets/GoogleMobileAds/Editor/Utils.cs", "class Utils\n{\n    internal const string AndroidPluginsDir = \"Assets\";\n}\n")
         assert all("GoogleMobileAds" not in problem for problem in unread_internal(cwd)), "Vendor SDK code is not ours"
     print("unread-internal self-test ok")
+
+    with tempfile.TemporaryDirectory() as cwd:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+        def stage(path, source):
+            file = Path(cwd, path)
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(source)
+            git("add", "--", path)
+
+        shop = "src/game/Assets/Code/Meta/Shop/"
+        group = "namespace Code.Meta.Shop\n{\n    public enum ShopGroup\n    {\n        Bundles = 0,\n    }\n}\n"
+        git("init", "-q")
+        stage(shop + "Config/ShopProductData.cs", "public class ShopProductData\n{\n    public ShopGroup Group;\n}\n")
+        stage(shop + "Config/ShopConfig.cs", "public class ShopConfig\n{\n    public List<ShopProductData> VisibleProductsOf(ShopGroup group) => null;\n}\n")
+        stage(shop + "UI/ShopDialogue.cs", "public class ShopDialogue\n{\n    private void Show() => ShowGroup(ShopGroup.Bundles);\n}\n")
+        stage("src/game/Assets/Code/Tests/EditMode/ShopConfigTests.cs", "public class ShopConfigTests\n{\n    private ShopGroup _group;\n}\n")
+        stage(shop + "ShopGroup.cs", group)
+        problems = config_enum(cwd)
+        assert len(problems) == 1 and problems[0].startswith(shop + "ShopGroup.cs:3:") and shop + "Config/" in problems[0], problems
+        git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Hook test", "-c", "user.email=hook@example.invalid",
+            "commit", "-qm", "Fixture")
+        stage(shop + "ShopGroup.cs", group.replace("Bundles = 0,", "Bundles = 0,\n        GemsPacks = 1,"))
+        assert not config_enum(cwd), "An old declaration the change does not touch stays"
+        git("mv", shop + "ShopGroup.cs", shop + "Config/ShopGroup.cs")
+        assert not config_enum(cwd), "An enum next to its config passes"
+        git("mv", shop + "Config/ShopGroup.cs", shop + "UI/ShopGroup.cs")
+        assert len(config_enum(cwd)) == 1, "Moving the enum out of Config is a new declaration there"
+        stage(shop + "ShopComponents.cs", "[Meta] public class ShopGroupComponent : IComponent { public ShopGroup Value; }\n")
+        assert not config_enum(cwd), "A component field makes the enum module API"
+        git("rm", "-qf", "--", shop + "ShopComponents.cs")
+        stage("src/game/Assets/Code/Gameplay/Board/BoardHUD.cs", "public class BoardHUD\n{\n    private bool _bundles = Group == ShopGroup.Bundles;\n}\n")
+        assert not config_enum(cwd), "A reader in another module makes the enum module API"
+        git("rm", "-qf", "--", "src/game/Assets/Code/Gameplay/Board/BoardHUD.cs")
+        stage(shop + "UI/ShopGroup.cs", "public class ShopProductItem\n{\n    public enum ShopGroup { Bundles = 0 }\n}\n")
+        assert not config_enum(cwd), "A nested enum stays with its owner"
+    print("config-enum self-test ok")
 
     with tempfile.TemporaryDirectory() as cwd:
         def git(*args):
