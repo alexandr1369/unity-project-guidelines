@@ -1418,14 +1418,47 @@ def record_component_problems(code, changed):
                                     "компонентом, запись допустима только элементом списка")
 
 
+def marker_components(code):
+    found = set()
+    for text in code.values():
+        for match in re.finditer(r"\bclass\s+(\w+)\s*:\s*[^{;]*\bI\w*Component\b[^{;]*\{([^{}]*)\}", blank_literals(text)):
+            if not re.search(r"\bpublic\s+[\w<>\[\],.? ]+\s+\w+\s*[;=]", match.group(2)):
+                found.add(match.group(1))
+    return found
+
+
+def named_marker(name, components, markers):
+    # Самый длинный хвост имени выборки, который назван маркером: _coinUnlocks -> CoinUnlock, _unlockedSlots -> Slot.
+    # Хвост, которым заканчивается компонент матчера, закрывает проверку: имя опирается на матчер, в том числе на
+    # частный вид (_effects по HealEffect, _boltArmaments по BouncingVegetableBoltArmament).
+    words = [word[:1].upper() + word[1:] for word in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", name.lstrip("_"))]
+    for index in range(len(words)):
+        tail = "".join(words[index:])
+        single = "".join(words[index:-1]) + singular(words[-1])
+        if any(component.endswith((tail, single)) for component in components):
+            return None
+        if single in markers:
+            return single
+    return None
+
+
 def group_kind_problems(code, changed):
     # OPTIONAL_ENTITAS.md, «Именование»: выборку называют по виду сущности — первому компоненту матчера. Компонент
     # с данными, который система читает или требует, имя не меняет: AllOf(LevelProgress, LevelAttempt) — это
     # _levelProgress, а не _levelAttempts. Уточнение-состояние перед видом (_animatingSlots) решается на ревью.
+    # Имя, которое называет маркер, обязано найти его в матчере: _coins по AllOf(ParentSlotId) держится на совпадении
+    # данных, а не на виде, и подхватит сущность другого вида, которой повесят тот же компонент.
     data = data_components(code)
+    markers = marker_components(code)
     for path, added in changed.items():
         for name, start, end, components in group_matchers(blank_literals(code[path])):
             if not components or not added.intersection(range(start, end + 1)):
+                continue
+            absent = named_marker(name, components, markers)
+            if absent:
+                yield path, start, (f"выборка {name} названа по {absent}, а в матчере его нет: вид сущности ставь первым в AllOf, "
+                                    f"даже если выборку уже сужает компонент с данными, иначе назови выборку по виду из матчера "
+                                    f"(OPTIONAL_ENTITAS.md, «Канон именования», поле группы)")
                 continue
             word = singular(name.lstrip("_")).lower()
             kind = components[0]
@@ -1980,7 +2013,14 @@ def self_test():
     components = {"Assets/Code/Meta/LevelProgressComponents.cs": ("[Meta] public class LevelProgress : IComponent { }\n"
                                                                     "[Meta] public class LevelAttempt : ISavedComponent { public int Value; }\n"
                                                                     "[Game] public class Slot : IComponent { }\n"
-                                                                    "[Game] public class Animating : IComponent { }")}
+                                                                    "[Game] public class Animating : IComponent { }\n"
+                                                                    "[Game] public class Coin : IComponent { }\n"
+                                                                    "[Game] public class ParentSlotId : IComponent { public int Value; }\n"
+                                                                    "[Meta] public class CoinUnlock : ISavedComponent { }\n"
+                                                                    "[Meta] public class MaxUnlockedCoinNumber : ISavedComponent { public int Value; }\n"
+                                                                    "[Game] public class Effect : IComponent { }\n"
+                                                                    "[Game] public class HealEffect : IComponent { }\n"
+                                                                    "[Game] public class EffectValue : IComponent { public float Value; }")}
     system = "Assets/Code/Gameplay/CountSystem.cs"
     def kind(group):
         code = components | {system: group}
@@ -1989,6 +2029,10 @@ def self_test():
     assert "по компоненту данных LevelAttempt" in kind(attempt)[0]
     assert not kind(attempt.replace("_levelAttempts", "_levelProgress")), "A group named after its kind passes"
     assert not kind("_animatingSlots = game.GetGroup(GameMatcher.AllOf(GameMatcher.Slot, GameMatcher.Animating));"), "A state qualifier is a review matter"
+    assert "названа по Coin" in kind("_coins = game.GetGroup(GameMatcher.ParentSlotId);")[0], "A kind name needs its marker in the matcher"
+    assert "названа по CoinUnlock" in kind("_coinUnlocks = meta.GetGroup(MetaMatcher.MaxUnlockedCoinNumber);")[0]
+    assert not kind("_coins = game.GetGroup(GameMatcher.AllOf(GameMatcher.Coin, GameMatcher.ParentSlotId));"), "The kind in AllOf passes"
+    assert not kind("_effects = game.GetGroup(GameMatcher.AllOf(GameMatcher.HealEffect, GameMatcher.EffectValue));"), "A narrower kind passes"
     print("group-kind self-test ok")
 
     record_code = {"Assets/Code/Meta/ShopComponents.cs": ("[Meta] public class ShopProductPurchasedRequest : IComponent { public ShopPurchaseData Value; }\n"
