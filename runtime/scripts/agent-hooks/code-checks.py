@@ -842,6 +842,31 @@ def inline_member_condition(lines, added):
             yield index + 1, "условие из полей и свойств класса: вынеси в приватное свойство-вопрос (CanShowDialogue, CanDeal)"
 
 
+GUARD_HEAD = re.compile(r"^(?P<indent>[ \t]*)if \((?P<condition>.*)\)[ \t]*$")
+GUARD_EXIT = re.compile(r"^[ \t]*(?:continue|break|return|throw)\b[^;]*;[ \t]*$")
+
+
+def and_operands(condition):
+    top = top_level_expression(condition)
+    return set(condition_operands(condition)) if top and "&&" in top and "||" not in top else set()
+
+
+def split_guard(lines, added):
+    # CODE_STYLE.md, «Методы»: подряд идущие guard-ы с одним выходом по умолчанию объединяют в один if. Без исключений ловится
+    # пара, где оба условия требуют один и тот же операнд &&: это одна проверка A && (X || Y), разрезанная на две.
+    text = blank_literals("\n".join(lines)).split("\n")
+    guards = [(index, head["indent"], and_operands(head["condition"]), lines[index + 1].strip())
+              for index in range(len(text) - 1)
+              if (head := GUARD_HEAD.match(text[index])) and GUARD_EXIT.match(text[index + 1])]
+    for (first, indent, operands, exit), (second, next_indent, next_operands, next_exit) in zip(guards, guards[1:]):
+        shared = sorted(operands & next_operands)
+        if (not shared or indent != next_indent or exit != next_exit or any(line.strip() for line in text[first + 2:second])
+                or not added.intersection(range(first + 1, second + 3))):
+            continue
+        yield second + 1, (f"guard с тем же выходом «{exit}» снова требует {shared[0]}: объедини с предыдущим в один if — "
+                           f"{shared[0]} && (… || …)")
+
+
 PROCESS_MARKER = re.compile(r"(ing|Processing)$")
 CODE_EXCLUDES = ("/Generated/", "/Tests/", "/Plugins/")
 
@@ -1625,7 +1650,7 @@ def needless_wrap(lines, added):
 CHECKS = (jump_spacing, config_extension, component_name, expression_wrapping, request_before_save,
           single_return_getter, awake_method, inline_member_condition, inserted_in_list, component_value_initializer, component_record,
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
-          ecs_group_iterators, expression_body_line, needless_wrap, component_context)
+          ecs_group_iterators, expression_body_line, needless_wrap, component_context, split_guard)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher, analytics_text_constant, one_line_wrapper,
                purchase_word)
 
@@ -2717,6 +2742,19 @@ def self_test():
     assert flagged == [1, 2, 3, 4, 5, 11], flagged
     assert not list(purchase_word(purchase_lines, every_line, "src/game/Assets/Plugins/Store/Store.cs")), "SDK code stays out"
     print("purchase-word self-test ok")
+
+    reroll = ["if (request.isUseRerollRequest && slotSnapshots == null)", "    continue;", "",
+              "if (request.isUseRerollRequest && !TrySpendReroll())", "    continue;"]
+    assert [number for number, _ in split_guard(reroll, {4})] == [4], "Guards sharing an && operand and the exit are one check"
+    assert not list(split_guard(reroll, set())), "Untouched guards stay"
+    assert not list(split_guard(reroll[:4] + ["    break;"], {4})), "Different exits are different checks"
+    assert not list(split_guard(reroll[:3] + ["Read();"] + reroll[3:], set(range(1, 7)))), "A statement between guards splits them"
+    assert not list(split_guard(["if (a && b || c)", "    return;", "if (a && d)", "    return;"], {1, 3})), "A top-level || is no && chain"
+    stages = ["if (!coin.hasCoinObstacleType || coin.CoinObstacleType != obstacle)", "    continue;", "",
+              "if (obstacle == ObstacleType.Resin && !coin.isResinCoin)", "    continue;", "",
+              "if (obstacle == ObstacleType.HiddenColor && ContinuesHiddenGroup(coin))", "    continue;"]
+    assert not list(split_guard(stages, set(range(1, 9)))), "Guards without a shared operand are separate stages"
+    print("split-guard self-test ok")
 
 
 if __name__ == "__main__":
