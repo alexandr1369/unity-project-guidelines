@@ -5,6 +5,7 @@
 # К каждому сообщению кладёт заголовки разделов «Отложено из ГД» и «Отложено из МР» из TASKS.md, чтобы задачу
 # сверяли с отложенным.
 # На сообщение о слиянии кладёт переключение владельца на следующий PR первым шагом и сверку карточек.
+# На сообщение о карточке трекера или о взятии задачи кладёт раздел о карточках трекера: перевод в «В работе» — первым действием.
 # Туда же кладёт просроченный архитектурный аудит: счётчик читает audit_due.py, память ассистента его не ведёт.
 import json
 import os
@@ -20,10 +21,14 @@ QUESTIONS_SECTION = "## Вопросы геймдизайну и владель�
 SELF_CHECK_SECTION = "## Самопроверка перед отчётом"
 FEEDBACK_SECTION = "## Выводы из замечаний владельца"
 MATERIALS_SECTION = "## Что брать из материалов геймдизайна"
+TRACKER_SECTION = "## Карточки трекера"
 DEFERRED_SECTIONS = ("## Отложено из ГД", "## Отложено из МР")
 QUESTION = re.compile(r"вопрос", re.I)
 GAME_DESIGN = re.compile(r"(?<!\w)(?:г\.?д|gd|гэдэ)(?!\w)|геймдиз", re.I)
 MATERIALS = re.compile(r"карточк|trello|трелл|(?<!\w)тз(?!\w)", re.I)
+TRACKER = re.compile(r"(?<!\w)трел|trello|карточк", re.I)
+TASK = re.compile(r"таск", re.I)
+TAKE = re.compile(r"займ|возьм|(?<!\w)бер(?:и|ём|ем)(?!\w)|взя|приступ|в\s*работу|(?<!\w)(?:пере)?тян|(?<!\w)с?делай", re.I)
 QUESTIONS = re.compile(r"вопрос(?:ы|ов|ам|ами|ах)", re.I)
 REQUEST = re.compile(r"дай|кинь|кидай|закин|отда|продублир|составь|собер|запиши|задавай|задай|остал|какие|сократи|перепиш", re.I)
 SELF_CHECK = re.compile(r"перепров|провер\w* себя|сам себя провер", re.I)
@@ -39,6 +44,15 @@ def asks_questions(prompt):
         if GAME_DESIGN.search(window):
             return True
         if QUESTIONS.match(prompt, match.start()) and REQUEST.search(window):
+            return True
+    return False
+
+
+def mentions_tracker_task(prompt):
+    if TRACKER.search(prompt):
+        return True
+    for match in TASK.finditer(prompt):
+        if TAKE.search(prompt[max(0, match.start() - WINDOW):match.end() + WINDOW]):
             return True
     return False
 
@@ -99,6 +113,10 @@ if deferred:
 if reports_pr_completion(prompt):
     reminders.append(next_review_reminder())
     reminders.append(tracker_reminder())
+elif mentions_tracker_task(prompt):
+    reminders.append("Речь о задаче или карточке трекера. Если владелец даёт карточку в работу, первым действием, как только определён состав работы, "
+                     "до кода, макетов и ветки выполни постоянное поручение проекта о статусах из CLAUDE.md/AGENTS.md и проверь колонку.\n\n"
+                     + section(TRACKER_SECTION))
 if asks_questions(prompt):
     reminders.append("Владелец просит вопросы. Каждый вопрос до отдачи проверь по правилам ниже глазами ГД, который видит его впервые.\n\n"
                      + section(QUESTIONS_SECTION))

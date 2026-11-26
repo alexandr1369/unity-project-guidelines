@@ -239,6 +239,21 @@ class HookTests(unittest.TestCase):
                 self.assertIn("## Что брать из материалов геймдизайна", context)
                 self.assertIn("Отложено из ГД", context)
 
+    def test_tracker_card_or_taken_task_injects_tracker_status_rules(self):
+        prompts = ['ЗАйдимись плиз таской "Заменить дизайн HUD в сцене геймплея" в трелло',
+                   "https://trello.com/c/4OSVNrFN/143 Возьми плиз таску в работу, и принеси МР по ней",
+                   "Сделай оба таска плиз", "В карточке написано про три бустера", "Можем таску в трелке в готово перетянуть?", "Влил 172, бери следующую карточку"]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                context = json.loads(self.hook("", script="prompt-reminders.py", prompt=prompt))["hookSpecificOutput"]["additionalContext"]
+                self.assertEqual(context.count("## Карточки трекера"), 1)
+                self.assertIn("постоянным поручением", context)
+
+    def test_tasks_without_tracker_or_taking_do_not_inject_status_rules(self):
+        for prompt in ("Сколько тасков осталось в TASKS.md?", "Сделай кнопку зелёной", "Подтяни main плиз", "Стрелка на кнопке кривая"):
+            with self.subTest(prompt=prompt):
+                self.assertNotIn("Карточки трекера", self.hook("", script="prompt-reminders.py", prompt=prompt))
+
     def test_successful_commit_without_new_names_injects_self_check(self):
         self.stage(VALID.replace("Initialize() { }", "Initialize() { base.Initialize(); }"))
         self.git("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
