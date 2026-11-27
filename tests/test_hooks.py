@@ -911,6 +911,30 @@ class HookTests(unittest.TestCase):
         self.assertNotIn("gitlab/main", output["additionalContext"])
 
 
+class CardReminderTests(unittest.TestCase):
+    def reminder(self, tool, tool_input):
+        event = {"cwd": str(ROOT), "tool_name": tool, "tool_input": tool_input}
+        result = subprocess.run([sys.executable, "-B", str(SCRIPTS / "gd-card-reminder.py")], input=json.dumps(event),
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_card_read_puts_game_design_filter_next_to_card(self):
+        for tool, tool_input in (("mcp__0335a559__trelloReadCard", {"action": "get"}),
+                                 ("mcp__claude-in-chrome__navigate", {"url": "https://trello.com/c/YVFb7IVV"})):
+            with self.subTest(tool=tool):
+                context = json.loads(self.reminder(tool, tool_input))["hookSpecificOutput"]
+                self.assertEqual(context["hookEventName"], "PostToolUse")
+                self.assertIn("## Что брать из материалов геймдизайна", context["additionalContext"])
+                self.assertIn("раздели её на 200", context["additionalContext"])
+
+    def test_other_tools_and_card_writes_stay_silent(self):
+        for tool, tool_input in (("mcp__0335a559__trelloWriteCard", {"action": "move"}), ("Bash", {"command": "ls"}),
+                                 ("mcp__claude-in-chrome__navigate", {"url": "https://github.com"})):
+            with self.subTest(tool=tool):
+                self.assertEqual(self.reminder(tool, tool_input), "")
+
+
 class GuidelinesPathTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="guidelines-path-")
@@ -975,11 +999,11 @@ class RuntimePackageTests(unittest.TestCase):
         self.assertEqual(sources["unity-project-guidelines"], ROOT.resolve())
         self.assertEqual(sources["unity-project-hooks"], RUNTIME.resolve())
 
-    def test_codex_runtime_has_five_unique_local_handlers(self):
+    def test_codex_runtime_has_six_unique_local_handlers(self):
         handlers = self.handlers(RUNTIME / ".codex-plugin" / "plugin.json", RUNTIME)
-        self.assertEqual(len(handlers), 5)
+        self.assertEqual(len(handlers), 6)
         self.assertCountEqual([event for event, _ in handlers],
-                              ["UserPromptSubmit", "PreToolUse", "PreToolUse", "PreToolUse", "PostToolUse"])
+                              ["UserPromptSubmit", "PreToolUse", "PreToolUse", "PreToolUse", "PostToolUse", "PostToolUse"])
         scripts = []
         for _, handler in handlers:
             arguments = shlex.split(handler["command"].replace("${CLAUDE_PLUGIN_ROOT}", str(RUNTIME)))
@@ -990,17 +1014,17 @@ class RuntimePackageTests(unittest.TestCase):
                 self.assertIn("-B", arguments)
             scripts.append(script.name)
         self.assertCountEqual(scripts, ["commit-guard.py", "verify-builds.sh", "mcp-long-command-guard.py",
-                                        "prompt-reminders.py", "pr-description-reminder.py"])
+                                        "prompt-reminders.py", "pr-description-reminder.py", "gd-card-reminder.py"])
 
     def test_claude_main_plugin_points_once_to_same_runtime(self):
         handlers = self.handlers(ROOT / ".claude-plugin" / "plugin.json", ROOT)
-        self.assertEqual(len(handlers), 5)
+        self.assertEqual(len(handlers), 6)
         commands = [shlex.split(handler["command"].replace("${CLAUDE_PLUGIN_ROOT}", str(ROOT))) for _, handler in handlers]
         self.assertTrue(all(command[:3] == ["python3", "-B", str(SCRIPTS / "run-installed.py")] for command in commands))
         scripts = [command[3] for command in commands]
         self.assertTrue(all((SCRIPTS / script).is_file() for script in scripts))
         self.assertCountEqual(scripts, ["commit-guard.py", "verify-builds.sh", "mcp-long-command-guard.py",
-                                        "prompt-reminders.py", "pr-description-reminder.py"])
+                                        "prompt-reminders.py", "pr-description-reminder.py", "gd-card-reminder.py"])
 
     def test_claude_hooks_run_the_installed_version(self):
         with tempfile.TemporaryDirectory() as temporary:

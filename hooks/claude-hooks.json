@@ -50,6 +50,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*trello.*|mcp__claude-in-chrome__navigate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/runtime/scripts/agent-hooks/run-installed.py\" gd-card-reminder.py",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }

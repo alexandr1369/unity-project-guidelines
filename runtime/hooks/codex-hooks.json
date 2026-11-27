@@ -39,6 +39,11 @@
             "type": "command",
             "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/pr-description-reminder.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/agent-hooks/gd-card-reminder.py\"",
+            "timeout": 10
           }
         ]
       }

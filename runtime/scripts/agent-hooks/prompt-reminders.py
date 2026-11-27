@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import audit_due
-from guidelines_path import guidelines_path
+from guidelines_path import guidelines_section as section
 from merge_reminders import next_review_reminder, tracker_reminder
 
 QUESTIONS_SECTION = "## Вопросы геймдизайну и владельцу"
@@ -72,18 +72,6 @@ def reports_pr_completion(prompt):
         if PR_REFERENCE.search(window):
             return True
     return False
-
-
-def section(title):
-    guidelines = guidelines_path("AI_COLLABORATION_GUIDELINES.md")
-    rules = []
-    for line in open(guidelines, encoding="utf-8"):
-        if not rules and line.strip() != title:
-            continue
-        if rules and line.startswith("## "):
-            break
-        rules.append(line.rstrip())
-    return "\n".join(rules).strip()
 
 
 def deferred_reminder(cwd):
