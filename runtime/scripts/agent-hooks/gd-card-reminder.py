@@ -16,8 +16,10 @@ CARD_URL = re.compile(r"trello\.com/c/", re.I)
 
 data = json.load(sys.stdin)
 tool = data.get("tool_name") or ""
-tool_input = json.dumps(data.get("tool_input") or {}, ensure_ascii=False)
-if not CARD_READ_TOOL.search(tool) and not (tool.endswith("navigate") and CARD_URL.search(tool_input)):
+tool_input = data.get("tool_input") or {}
+card_read = CARD_READ_TOOL.search(tool) and tool_input.get("action", "get") == "get"
+card_opened = tool.endswith("navigate") and CARD_URL.search(json.dumps(tool_input, ensure_ascii=False))
+if not card_read and not card_opened:
     sys.exit(0)
 
 reminder = ("Прочитана карточка трекера. До кода, макетов и ветки раздели её на 200: каждый пункт сначала сверь с гайдлайнами, "

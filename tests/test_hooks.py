@@ -928,8 +928,9 @@ class CardReminderTests(unittest.TestCase):
                 self.assertIn("## Что брать из материалов геймдизайна", context["additionalContext"])
                 self.assertIn("раздели её на 200", context["additionalContext"])
 
-    def test_other_tools_and_card_writes_stay_silent(self):
+    def test_card_lists_writes_and_other_tools_stay_silent(self):
         for tool, tool_input in (("mcp__0335a559__trelloWriteCard", {"action": "move"}), ("Bash", {"command": "ls"}),
+                                 ("mcp__0335a559__trelloReadCard", {"action": "list_by_list"}),
                                  ("mcp__claude-in-chrome__navigate", {"url": "https://github.com"})):
             with self.subTest(tool=tool):
                 self.assertEqual(self.reminder(tool, tool_input), "")
