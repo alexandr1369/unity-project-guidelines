@@ -1370,6 +1370,20 @@ def analytics_text_constant(lines, added, path):
             yield index + 1, "текст аналитики в const: имя события, ключ и значение параметра пиши текстом в вызове"
 
 
+def text_template(lines, added, path):
+    # UI_HIERARCHY_GUIDELINES.md, «Текст и ссылки»: шаблон текста, который видит игрок, — сериализованное поле рядом
+    # с текстом и шаблоном по умолчанию, а не константа и не интерполяция в коде.
+    if "/Assets/Code/" not in "/" + path or re.search(r"/(Tests|Editor|Generated)/", path):
+        return
+    target = r"(?:\.text\s*=|\.SetText\s*\()\s*"
+    for number in sorted(number for number in added if number <= len(lines)):
+        line = lines[number - 1]
+        constant = re.search(target + r"string\.Format\(\s*[A-Z][A-Z0-9_]*\s*,", line)
+        interpolated = re.search(target + r'\$"((?:[^"\\]|\\.)*)"', line)
+        if constant or interpolated and re.sub(r"\{[^{}]*\}", "", interpolated.group(1)):
+            yield number, "шаблон текста в коде: вынеси его в сериализованное поле рядом с текстом, шаблон — значением по умолчанию"
+
+
 def singular(word):
     if word.endswith("ies"):
         return word[:-3] + "y"
@@ -1655,7 +1669,7 @@ CHECKS = (jump_spacing, config_extension, component_name, expression_wrapping, r
           serialized_property_order, dialogue_lifecycle, mono_lifecycle_order, dialogue_lifecycle_order, ecs_group_usage,
           ecs_group_iterators, expression_body_line, needless_wrap, component_context, split_guard)
 PATH_CHECKS = (refresh_method_name, unity_time, self_update, animator_lifecycle, anyof_matcher, analytics_text_constant, one_line_wrapper,
-               purchase_word)
+               purchase_word, text_template)
 
 
 VOCABULARY_EXCLUDES = [":!*/Generated/*", ":!*/Tests/*", ":!*/Editor/*", ":!*/Plugins/*"]
@@ -2761,6 +2775,16 @@ def self_test():
               "if (obstacle == ObstacleType.HiddenColor && ContinuesHiddenGroup(coin))", "    continue;"]
     assert not list(split_guard(stages, set(range(1, 9)))), "Guards without a shared operand are separate stages"
     print("split-guard self-test ok")
+
+    texts = ['RemainingCoinsText.text = string.Format(REMAINING_COINS_FORMAT, count);', 'ProgressText.text = $"{percent}%";',
+             'CountText.text = $"{count}";', 'RemainingCoinsText.text = string.Format(RemainingCoinsFormat, count);',
+             'LevelText.text = string.Format(LevelFormatLocalizedString, level);', 'TimerText.SetText($"{minutes:00}:{seconds:00}");']
+    hud = "Assets/Code/Gameplay/Features/Level/Behaviours/LevelHUD.cs"
+    assert [number for number, _ in text_template(texts, set(range(1, 7)), hud)] == [1, 2, 6], "Constant and interpolated templates go to a field"
+    assert not list(text_template(texts, {3, 4, 5}, hud)), "A bare value, a field and a LocalizedString stay"
+    assert not list(text_template(texts, {1, 2}, "Assets/Code/Tests/PlayMode/LevelTests.cs")), "Tests are not player text"
+    assert not list(text_template(texts, {2}, "Assets/ResourcesRaw/Epic Toon FX/Demo/Scripts/Projectile.cs")), "Imported assets are not project code"
+    print("text-template self-test ok")
 
 
 if __name__ == "__main__":
