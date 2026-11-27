@@ -413,7 +413,10 @@ def expression_wrapping(lines, added):
 
     def structural(expression):
         builder = re.match(r"\s*\(?\s*(?:Create(?:Meta|Input)?Entity\.Empty|[\w.]+\.CreateSequence|(?:DG\.Tweening\.)?(?:DOTween|DOVirtual)\.\w+|[\w.]+\.DO[A-Z]\w*)\s*\(", expression)
-        chain = builder and re.search(r"\n\s*\.\w+(?:<[^\n]+>)?\s*\(", expression)
+        links = re.findall(r"\n\s*\.\w+(?:<[^\n]+>)?\s*\(", expression)
+        # DOTween на своей строке: первое звено — .To(...), цепочка — когда за ним идут настройки.
+        tween_root = re.match(r"\s*(?:DG\.Tweening\.)?(?:DOTween|DOVirtual)\s*\n", expression)
+        chain = builder and links or tween_root and len(links) > 1
         matcher = re.search(r"\b\w*Matcher\b[\s\S]*\.(AllOf|NoneOf|AnyOf)\s*\(", expression)
         return "{" in expression or expression.lstrip().startswith("[") or bool(chain or matcher)
 
@@ -1942,6 +1945,7 @@ def self_test():
         ["Tween tween = DOVirtual.Int(0, lastFrame, duration, SetFrame)", "    .SetEase(Ease.Linear);"],
         ["Tween tween = DOTween.ToAlpha(GetColor, SetColor, 1f, duration)", "    .SetEase(Ease.Linear);"],
         ["Tween tween = DOVirtual.Vector3(start, end, duration, SetPosition)", "    .SetEase(Ease.Linear);"],
+        ["_progressTween = DOTween", "    .To(() => progress, SetProgress, value, duration)", "    .SetEase(Ease.Linear);"],
         [r'string text = "if (first &&\nsecond)";'],
         ['string text = $"{Format("(")}";', 'Apply(first, second);'],
         ['string text = @"first', 'second";'],
@@ -1958,6 +1962,8 @@ def self_test():
     assert list(expression_wrapping(nested, {4})), "Structural callbacks do not exempt their ordinary calls"
     nested_tween = ["Tween tween = DOTween.To(() => Read(", "    first,", "    second), SetAlpha, 1f, duration)", "    .SetEase(Ease.Linear);"]
     assert list(expression_wrapping(nested_tween, {2})), "Tween builders do not exempt nested ordinary calls"
+    lone_tween = ["_progressTween = DOTween", "    .To(() => progress, SetProgress, value, duration);"]
+    assert list(expression_wrapping(lone_tween, {1, 2})), "A tween without settings is one call: DOTween.To(...)"
     print("expression-layout self-test ok")
 
     matcher = ["_slots = game.GetGroup(GameMatcher", "    .AnyOf(", "        GameMatcher.Animating,", "        GameMatcher.Selected));"]
