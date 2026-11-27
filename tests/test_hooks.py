@@ -214,6 +214,23 @@ class HookTests(unittest.TestCase):
     def test_unrelated_prompt_does_not_inject_rule_update_instructions(self):
         self.assertEqual(self.hook("", script="prompt-reminders.py", prompt="Покажи текущий баланс гемов"), "")
 
+    def test_request_for_message_to_someone_injects_questions_rules(self):
+        prompts = ["Скинь мне инфу, какую мне там спросить, если что-то не так",
+                   "Сделай мне сообщение для человека, который этим занимается",
+                   "Что ему написать про доступы?", "Надо спросить у админа про Play"]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                context = json.loads(self.hook("", script="prompt-reminders.py", prompt=prompt))["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("## Вопросы геймдизайну и владельцу", context)
+                self.assertIn("готовом сообщении для пересылки", context)
+
+    def test_owner_asking_himself_does_not_inject_questions_rules(self):
+        prompts = ["Хотел спросить, почему упал билд", "Спросить хочу, всё ли собралось",
+                   "Покажи сообщение в консоли после запуска"]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                self.assertNotIn("Вопросы геймдизайну", self.hook("", script="prompt-reminders.py", prompt=prompt))
+
     def test_every_prompt_lists_deferred_game_design_entries(self):
         (self.repo / "TASKS.md").write_text("# Задачи\n\n## Отложено из ГД\n\n### Тех-ошибки: восемь видов без проверок, 23.11.2026\n\n"
                                             "- Что хотел ГД: ...\n\n## Ответы геймдизайна\n\n### Аналитика, 23 ноября 2026\n", encoding="utf-8")
